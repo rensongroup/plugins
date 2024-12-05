@@ -1,0 +1,7 @@
+{
+    "version" : "0.1.2",
+    "description" : "FoxEss plugin",
+    "metric_source"  : "foxess",
+    "metric_type" : "foxess",
+    "python_version": 3
+}
