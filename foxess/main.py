@@ -194,7 +194,7 @@ class FoxEss(OMPluginBase):
         bat_real = bat_charge - bat_discharge
         solar_injection = -generation["cumulative"]
         solar_real = -next(
-            filter(lambda v: v["variable"] == "generationPower", real), {}
+            filter(lambda v: v["variable"] == "pvPower", real), {}
         ).get("value")
 
         logger.info(f"Solar: tot {solar_injection} kWh, real {solar_real} kW")
