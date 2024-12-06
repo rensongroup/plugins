@@ -84,8 +84,9 @@ except ImportError:
         )
 
 
-POLL_INTERVAL = 60
-
+POLL_INTERVAL_REAL = 120 # seconds
+POLL_INTERVAL_GENERATION = 30 * 60 # seconds
+GENERATION_POLL_DIV = POLL_INTERVAL_GENERATION / POLL_INTERVAL_REAL
 
 class FoxEss(OMPluginBase):
     """
@@ -93,7 +94,7 @@ class FoxEss(OMPluginBase):
     """
 
     name = "FoxEss"
-    version = "0.1.2"
+    version = "0.1.3"
     interfaces = [("config", "1.0")]
 
     default_config = {}
@@ -134,6 +135,8 @@ class FoxEss(OMPluginBase):
             )
         )
         self._battery_full_sent = False
+        self._poll_counter = 0
+        self._generation = None
         logger.info("Started FoxEss plugin {0}".format(FoxEss.version))
 
     @om_expose
@@ -181,10 +184,20 @@ class FoxEss(OMPluginBase):
 
         f.get_logger()
         f.get_device()
-        battery = f.get_battery()
-        generation = f.get_generation()
+
+        if (self._poll_counter % GENERATION_POLL_DIV) == 0:
+            # only poll total generation each 30 min
+            self._generation = f.get_generation()
+        self._poll_counter += 1
+
         real = f.get_real()
-        bat_consumption = battery["residual"]
+        # print(real)
+        soc = next(
+            filter(lambda v: v["variable"] == "SoC", real), {}
+        ).get("value")
+        bat_energy = next(
+            filter(lambda v: v["variable"] == "ResidualEnergy", real), {}
+        ).get("value")
         bat_charge = next(
             filter(lambda v: v["variable"] == "batChargePower", real), {}
         ).get("value")
@@ -192,22 +205,22 @@ class FoxEss(OMPluginBase):
             filter(lambda v: v["variable"] == "batDischargePower", real), {}
         ).get("value")
         bat_real = bat_charge - bat_discharge
-        solar_injection = -generation["cumulative"]
+        solar_injection = -self._generation["cumulative"]
         solar_real = -next(
             filter(lambda v: v["variable"] == "pvPower", real), {}
         ).get("value")
 
         logger.info(f"Solar: tot {solar_injection} kWh, real {solar_real} kW")
-        logger.info(f"Battery: energy {bat_consumption} kWh, real {bat_real} kW")
+        logger.info(f"Battery: energy {bat_energy} kWh, real {bat_real} kW")
         self.report_mc_status(
-            self._mc_battery, bat_consumption * 1000, 0, bat_real * 1000
+            self._mc_battery, bat_energy * 1000, 0, bat_real * 1000
         )
         self.report_mc_status(
             self._mc_solar, 0, solar_injection * 1000, solar_real * 1000
         )
 
         # send a notification when the battery is full
-        if battery["soc"] > 99:
+        if soc > 99:
             if not self._battery_full_sent:
                 self.connector.notification.send(
                     topic="FoxEss",
@@ -225,7 +238,7 @@ class FoxEss(OMPluginBase):
                 self.poll_foxess()
             except Exception:
                 logger.exception("Error while polling Fox Ess")
-            time.sleep(POLL_INTERVAL - (time.time() - now) % POLL_INTERVAL)
+            time.sleep(POLL_INTERVAL_REAL - (time.time() - now) % POLL_INTERVAL_REAL)
 
     # Measurement Counters
     def report_mc_status(self, mc_dto, total_consumed, total_injected, realtime):
