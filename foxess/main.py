@@ -205,7 +205,7 @@ class FoxEss(OMPluginBase):
             filter(lambda v: v["variable"] == "batDischargePower", real), {}
         ).get("value")
         bat_real = bat_charge - bat_discharge
-        solar_injection = -self._generation["cumulative"]
+        solar_injection = self._generation["cumulative"]
         solar_real = -next(
             filter(lambda v: v["variable"] == "pvPower", real), {}
         ).get("value")
