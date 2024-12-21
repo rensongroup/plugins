@@ -1,6 +1,7 @@
 # Packages
 *.tgz
 *.md5
+*.whl
 
 #OS
 .DS_Store
@@ -13,3 +14,8 @@ gateway_src
 
 
 **/__pycache__/**
+# virtual environments
+*.venv/*
+
+# python compiled files
+*.pyc

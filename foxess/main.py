@@ -20,69 +20,14 @@ except ImportError:
     sys.path.insert(0, root)
     import openapi as f
 
-
-try:
-    from plugins.base import (
-        OMPluginBase,
-        PluginConfigChecker,
-        background_task,
-        om_expose,
-        sensor_status,
-        measurement_counter_status,
-    )
-except ImportError:
-    """
-    Construct a mock of the imports
-    """
-
-    class OMPluginBase:
-        def __init__(self, webinterface, connector) -> None:
-            self.connector = connector
-            pass
-
-        def read_config(self, config):
-            return {}
-
-    class PluginConfigChecker:
-        def __init__(self, description) -> None:
-            pass
-
-        pass
-
-    def om_expose(method=None, auth=True, content_type="application/json", version=1):
-        def wrapper(_method):
-            _method.om_expose = {
-                "method": _method,
-                "auth": auth,
-                "content_type": content_type,
-                "version": version,
-            }
-            return _method
-
-        if method is not None:
-            return wrapper(method)
-        return wrapper
-
-    def _fill_version(field, version, method=None):
-        def wrapper(_method):
-            setattr(_method, field, {"version": version})
-            return _method
-
-        if method is not None:
-            return wrapper(method)
-        return wrapper
-
-    def background_task(method=None, version=1):
-        return _fill_version(field="background_task", version=version, method=method)
-
-    def sensor_status(method=None, version=1):
-        return _fill_version(field="sensor_status", version=version, method=method)
-
-    def measurement_counter_status(method=None, version=1):
-        return _fill_version(
-            field="measurement_counter_status", version=version, method=method
-        )
-
+from plugins.base import (
+    OMPluginBase,
+    PluginConfigChecker,
+    background_task,
+    om_expose,
+    sensor_status,
+    measurement_counter_status,
+)
 
 POLL_INTERVAL_REAL = 120 # seconds
 POLL_INTERVAL_GENERATION = 30 * 60 # seconds
@@ -222,6 +167,7 @@ class FoxEss(OMPluginBase):
         # send a notification when the battery is full
         if soc > 99:
             if not self._battery_full_sent:
+                logger.info("Battery is full again")
                 self.connector.notification.send(
                     topic="FoxEss",
                     message="Battery is full again",
@@ -260,9 +206,17 @@ class FoxEss(OMPluginBase):
 if __name__ == "__main__":
     logging.basicConfig(level="INFO")
 
+    # setup plumbing with the correct signatures
+    from plugin_runtime.web import WebInterfaceDispatcher
+    from plugin_runtime.connectors.connector import Connector
+    from gateway.utilities.event_loop import EventLoop
+    eventloop = EventLoop(name='plugin_event_loop')
+    connector = Connector(forward_callback_actions=lambda *args, **kwargs: None, forward_status_event_subscriptions=lambda *args, **kwargs: None, event_loop=eventloop)
+    web_dispatcher = WebInterfaceDispatcher("FoxEss")
+
     # replace by actual key for local development
     FoxEss.read_config = MagicMock(
         return_value={"api_key": "<API_KEY>"}
     )
-    plugin = FoxEss(MagicMock(), MagicMock())
+    plugin = FoxEss(webinterface=web_dispatcher, connector=connector)
     plugin.poll_foxess()
