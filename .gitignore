@@ -8,6 +8,7 @@
 
 # Editors
 .idea
+.vscode
 
 # gateway source simlink
 gateway_src
