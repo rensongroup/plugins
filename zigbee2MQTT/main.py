@@ -24,7 +24,7 @@ class zigbee2MQTT(OMPluginBase):
 
     metric_definitions = []
     #TODO: add luminance (  LUX = 'lux'?? ) as sensor device type
-    sensor_device_types = ['temperature', 'humidity', 'co2', 'energy(kwh)', 'illuminance_lux']
+    sensor_device_types = ['temperature', 'humidity', 'co2', 'energy(kwh)', 'brightness']
     actuator_device_types = ['light', 'outlet', 'dimmer']
 
     config_description = [{'name': 'broker_ip',
@@ -106,8 +106,6 @@ class zigbee2MQTT(OMPluginBase):
         self._list_of_sensors = self._list_sensors()
         self._dict_of_actuators = self._dict_of_actuators()
         self._dict_of_inputs = self._dict_of_inputs()
-        #wafte
-        logger.info("Dict of inputs is {0}".format(self._dict_of_inputs))
 
         logger.info("Register sensors")
         self._register_sensors()
@@ -195,13 +193,12 @@ class zigbee2MQTT(OMPluginBase):
                         sensor = self.connector.sensor.register_co2_ppm(external_id=external_id, name=sensor_config['om_friendly_name'])
                     elif sensor_config['device_type'] == 'energy(kwh)':
                         sensor = self.connector.sensor.register_energy_kwh(external_id=external_id, name=sensor_config['om_friendly_name'])
-                    elif sensor_config['device_type'] == 'illuminance_lux':
+                    elif sensor_config['device_type'] == 'brightness':
                         sensor = self.connector.sensor.register(external_id=external_id, physical_quantity='brightness', unit='lux', name=sensor_config['om_friendly_name'])
                     self._sensor_dto[dto_name] = sensor
             except Exception:
                 logger.exception('Error registering sensor')
                 #self._sensor_dto = None
-            logger.info('dto_list is {0}'.format(self._sensor_dto))
         else:
             self._sensor_dto = None
 
@@ -234,17 +231,19 @@ class zigbee2MQTT(OMPluginBase):
         If for some reason (e.g. an error), this function cannot be executed, paho-mqtt falls back on the default
         on_message call.
         """
-        _ = client, userdata
-        mqtt_friendly_name = msg.topic.split('/')[1]
-        payload = json.loads(msg.payload)
-        logger.info('Message read for friendly name {0} with payload {1}'.format(mqtt_friendly_name, payload))
-        if mqtt_friendly_name in self._list_of_sensors:
-            self._report_sensor_state(mqtt_friendly_name, payload)
-        #TODO: check value since friendly name is the value not the key
-        if mqtt_friendly_name in self._dict_of_actuators.values():
-             self._report_actuator_state(mqtt_friendly_name, payload)
-        if mqtt_friendly_name in self._dict_of_inputs.values():
-             self._report_input_state(mqtt_friendly_name, payload)
+        try:
+            _ = client, userdata
+            mqtt_friendly_name = msg.topic.split('/')[1]
+            payload = json.loads(msg.payload)
+            if mqtt_friendly_name in self._list_of_sensors:
+                self._report_sensor_state(mqtt_friendly_name, payload)
+            #TODO: check value since friendly name is the value not the key
+            if mqtt_friendly_name in self._dict_of_actuators.values():
+                self._report_actuator_state(mqtt_friendly_name, payload)
+            if mqtt_friendly_name in self._dict_of_inputs.values():
+                self._report_input_state(mqtt_friendly_name, payload)
+        except Exception as ex:
+            logger.info("Something went wrong in the _on_message_reading: {0}".format(ex))
 
     def _get_actuator_id(self, val):
         for key, value in self._dict_of_actuators.items():
@@ -264,11 +263,13 @@ class zigbee2MQTT(OMPluginBase):
                     dto_name = '{0}-{1}'.format(sensor_config['device_type'], sensor_config['om_friendly_name'])
                     dto = self._sensor_dto[dto_name]
                     sensor_type = sensor_config['device_type']
+                    #Temp hack
+                    if sensor_type == 'brightness':
+                        sensor_type = 'illuminance'
                     value = payload[sensor_type]
-                    self.connector.sensor.report_state(sensor=dto, value=value)
-                    logger.info('Sensor state updated for {0} with type {1} and value{2}'.format(mqtt_friendly_name, sensor_type, value))
+                    self.connector.sensor.report_status(sensor=dto, value=value)
         except Exception as ex:
-            logger.info('Failed to set the sensor state for {0} with type {1} and value{2}'.format(mqtt_friendly_name, sensor_type, value))
+            logger.info('Failed to set the sensor state for {0} with type {1} with exception {2} '.format(mqtt_friendly_name, sensor_type, ex))
 
     # Fetch all actuator data and update the value accordingly
     def _report_actuator_state(self, mqtt_friendly_name, payload):
@@ -284,7 +285,7 @@ class zigbee2MQTT(OMPluginBase):
             else:
                 logger.info("State {0} not implemented yet".format(value))
         except Exception as ex:
-            logger.info('Failed to set the actuator state for {0} with value {1}'.format(mqtt_friendly_name, value))
+            logger.info('Failed to set the actuator state for {0} with exception {2} '.format(mqtt_friendly_name, ex))
 
     # Fetch all input data and update the value accordingly
     def _report_input_state(self, mqtt_friendly_name, payload):
@@ -292,9 +293,8 @@ class zigbee2MQTT(OMPluginBase):
             input_id = self._get_input_id(mqtt_friendly_name)
             value = payload["occupancy"]
             result = json.loads(self.webinterface.set_input(None, input_id, value))
-            logger.info('WAFTE, I hate set the input state with id {0} for {0} with value {1}'.format(input_id, mqtt_friendly_name, value))
         except Exception as ex:
-            logger.info('Failed to set the input state for {0} with value {1} with exception {3}'.format(mqtt_friendly_name, value, ex))
+            logger.info('Failed to set the input state for {0} with with exception {1}'.format(mqtt_friendly_name, ex))
 
     # Check if the output is configured in the zigbee2mqtt plugin and if so send the appropriate command
     @output_status(version=2)
@@ -302,7 +302,6 @@ class zigbee2MQTT(OMPluginBase):
         if event['id'] in self._dict_of_actuators:
             #publish mqtt message with the state
             try:
-                logger.info('WAFTE: event is {0}'.format(event['id']))
                 topic = '{0}/{1}/set'.format(self._zigbee2mqtt_broker_topic, self._dict_of_actuators[event['id']])
                 state_message = {"state": "{0}".format("ON" if event['status']['on'] else "OFF")}
                 self.client.publish(topic, json.dumps(state_message))
@@ -335,7 +334,6 @@ class zigbee2MQTT(OMPluginBase):
                         self.client.username_pw_set(self._broker_username, self._broker_password)
                     self.client.connect(self._broker_ip, self._broker_port, 5)
                     self.client.loop_start()
-                    logger.info('WAFTE: Connected to MQTT broker')
                 except Exception as ex:
                     logger.info("Error connecting to MQTT broker ({0}:{1}): {2}".format(self._broker_ip, self._broker_port, ex))
                     time.sleep(3)
@@ -367,3 +365,4 @@ class zigbee2MQTT(OMPluginBase):
         self._read_config()
         self.write_config(config)
         return json.dumps({'success': True})
+
