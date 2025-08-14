@@ -1,0 +1,239 @@
+name: Build and Publish Plugins
+
+on:
+  workflow_dispatch:
+    inputs:
+      plugins:
+        description: 'Comma-separated list of plugin names to build and publish (leave empty for all)'
+        required: false
+        type: string
+        default: ''
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - stg 
+          - prd
+        default: 'dev'
+
+env:
+  API_BASE_URL: https://${{ github.event.inputs.environment }}-api.openmotics-internal.com:8443/api/internal/plugins/release_artifact
+
+jobs:
+  discover-plugins:
+    runs-on: [self-hosted, Linux]
+    outputs:
+      plugins: ${{ steps.discover.outputs.plugins }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Discover plugins
+        id: discover
+        run: |
+          # Get list of directories with info.json files (these are plugins)
+          all_plugins=$(find . -maxdepth 2 -name "info.json" -type f | cut -d'/' -f2 | sort)
+          
+          if [ -n "${{ github.event.inputs.plugins }}" ]; then
+            # Use specified plugins
+            requested_plugins="${{ github.event.inputs.plugins }}"
+            # Convert comma-separated list to space-separated and validate
+            plugins_array=""
+            IFS=',' read -ra PLUGIN_LIST <<< "$requested_plugins"
+            for plugin in "${PLUGIN_LIST[@]}"; do
+              plugin=$(echo "$plugin" | xargs) # trim whitespace
+              if [ -d "$plugin" ] && [ -f "$plugin/info.json" ]; then
+                plugins_array="$plugins_array $plugin"
+              else
+                echo "Warning: Plugin '$plugin' not found or missing info.json"
+              fi
+            done
+            plugins=$(echo $plugins_array | xargs)
+          else
+            # Use all discovered plugins
+            plugins="$all_plugins"
+          fi
+          
+          echo "Discovered plugins: $plugins"
+          
+          # Convert to JSON array for matrix strategy without using jq
+          if [ -z "$plugins" ]; then
+            echo "plugins=[]" >> $GITHUB_OUTPUT
+          else
+            # Convert space-separated list to JSON array using pure bash
+            json_array="["
+            first=true
+            for plugin in $plugins; do
+              if [ "$first" = true ]; then
+                json_array="$json_array\"$plugin\""
+                first=false
+              else
+                json_array="$json_array,\"$plugin\""
+              fi
+            done
+            json_array="$json_array]"
+            echo "plugins=$json_array" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-publish:
+    needs: discover-plugins
+    if: ${{ needs.discover-plugins.outputs.plugins != '[]' }}
+    runs-on: [self-hosted, Linux]
+    strategy:
+      matrix:
+        plugin: ${{ fromJson(needs.discover-plugins.outputs.plugins) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up environment variables
+        id: setup
+        run: |
+          PLUGIN_NAME="${{ matrix.plugin }}"
+          echo "PLUGIN_NAME=$PLUGIN_NAME" >> $GITHUB_ENV
+          
+          # Get version from plugin's info.json or main.py
+          if [ -f "$PLUGIN_NAME/info.json" ]; then
+            VERSION=$(jq -r '.version // empty' "$PLUGIN_NAME/info.json")
+          fi
+          
+          if [ -z "$VERSION" ] && [ -f "$PLUGIN_NAME/main.py" ]; then
+            VERSION=$(grep "version.*=" "$PLUGIN_NAME/main.py" | cut -d '"' -f 2 | cut -d "'" -f 2 | head -n 1)
+          fi
+          
+          if [ -z "$VERSION" ]; then
+            echo "Error: Could not determine version for plugin $PLUGIN_NAME"
+            exit 1
+          fi
+          
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${PLUGIN_NAME}_${VERSION}.tgz" >> $GITHUB_ENV
+          echo "MD5_FILE=${PLUGIN_NAME}_${VERSION}.md5" >> $GITHUB_ENV
+          
+          echo "Building plugin: $PLUGIN_NAME version: $VERSION"
+
+      - name: Validate plugin structure
+        run: |
+          if [ ! -d "$PLUGIN_NAME" ]; then
+            echo "Error: Plugin directory '$PLUGIN_NAME' not found"
+            exit 1
+          fi
+          
+          if [ ! -f "$PLUGIN_NAME/info.json" ]; then
+            echo "Error: info.json not found in plugin '$PLUGIN_NAME'"
+            exit 1
+          fi
+          
+          if [ ! -f "$PLUGIN_NAME/main.py" ]; then
+            echo "Error: main.py not found in plugin '$PLUGIN_NAME'"
+            exit 1
+          fi
+          
+          # Validate version format
+          if ! [[ $VERSION =~ ^([0-9]+\.)([0-9]+\.)(\*|[0-9]+)$ ]]; then
+            echo "Error: Invalid version format '$VERSION' for plugin '$PLUGIN_NAME'"
+            exit 1
+          fi
+
+      - name: Package plugin
+        run: |
+          echo "Packaging plugin $PLUGIN_NAME version $VERSION"
+          chmod +x package.sh
+          
+          # Use the existing package.sh script
+          ./package.sh "$PLUGIN_NAME"
+          
+          # Verify the files were created
+          if [ ! -f "$ARTIFACT_NAME" ]; then
+            echo "Error: Artifact file $ARTIFACT_NAME was not created"
+            exit 1
+          fi
+          
+          if [ ! -f "$MD5_FILE" ]; then
+            echo "Error: MD5 file $MD5_FILE was not created"
+            exit 1
+          fi
+          
+          echo "Package created successfully:"
+          ls -la "$ARTIFACT_NAME" "$MD5_FILE"
+
+      - name: Prepare upload data
+        id: prepare
+        run: |
+          # Read MD5 checksum
+          MD5_CHECKSUM=$(cut -d' ' -f1 "$MD5_FILE")
+          echo "MD5_CHECKSUM=$MD5_CHECKSUM" >> $GITHUB_ENV
+          
+          echo "Plugin info:"
+          cat "$PLUGIN_NAME/info.json"
+          echo ""
+          echo "MD5 checksum: $MD5_CHECKSUM"
+
+      - name: Upload plugin to API
+        env:
+          API_TOKEN: ${{ github.event.inputs.environment == 'prd' && secrets.CLOUD_CICD_TOKEN_PRD || github.event.inputs.environment == 'stg' && secrets.CLOUD_CICD_TOKEN_STG || secrets.CLOUD_CICD_TOKEN_DEV }}
+          HOST: ${{ github.event.inputs.environment }}.openmotics.com
+        run: |
+          if [ -z "$API_TOKEN" ]; then
+            echo "Error: API token not found. Please set secret API_TOKEN_${{ github.event.inputs.environment == 'dev' && 'DEV' || github.event.inputs.environment == 'stg' && 'STG' || 'PRD' }}"
+            exit 1
+          fi
+          
+          echo "Publishing plugin $PLUGIN_NAME version $VERSION to ${{ github.event.inputs.environment }} environment"
+          
+          # Read info.json content as string
+          INFO_JSON=$(cat "$PLUGIN_NAME/info.json")
+
+          # Prepare the curl command with proper error handling
+          HTTP_CODE=$(curl -X POST \
+            -w '%{http_code}' \
+            -H "x-api-key: $API_TOKEN" \
+            -H "Host: $HOST" \
+            -F "name=$PLUGIN_NAME" \
+            -F "version=$VERSION" \
+            -F "info=$INFO_JSON" \
+            -F "md5=$MD5_CHECKSUM" \
+            -F "artifact=@$ARTIFACT_NAME" \
+            "$API_BASE_URL" \
+            -o response.json)
+          
+          echo "HTTP Response Code: $HTTP_CODE"
+          
+          if [ -f response.json ]; then
+            echo "Response body:"
+            cat response.json
+          fi
+          
+          # Check if upload was successful
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Successfully published plugin $PLUGIN_NAME version $VERSION to ${{ github.event.inputs.environment }}"
+          else
+            echo "❌ Failed to publish plugin $PLUGIN_NAME version $VERSION to ${{ github.event.inputs.environment }}"
+            echo "HTTP Code: $HTTP_CODE"
+            exit 1
+          fi
+
+  summary:
+    needs: [discover-plugins, build-and-publish]
+    if: always()
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Job Summary
+        run: |
+          echo "## Plugin Build and Publish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Requested plugins:** ${{ github.event.inputs.plugins || 'All available plugins' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ needs.build-and-publish.result }}" = "success" ]; then
+            echo "✅ All plugins were successfully built and published!" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ needs.build-and-publish.result }}" = "failure" ]; then
+            echo "❌ Some plugins failed to build or publish. Check the job logs for details." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Build and publish job was skipped or cancelled." >> $GITHUB_STEP_SUMMARY
+          fi
