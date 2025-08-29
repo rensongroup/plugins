@@ -1,0 +1,7 @@
+{
+    "version" : "0.0.1",
+    "description" : "Dummy Error Plugin",
+    "metric_source"  : "dummy_error",
+    "metric_type" : "dummy_error",
+    "python_version": 3
+}
