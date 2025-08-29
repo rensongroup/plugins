@@ -142,7 +142,7 @@ class DummyError(OMPluginBase):
         self._wants_registration = True
 
         self.connector.hot_water.subscribe_status_event(
-            self.handle_hot_water_status, version=2
+            self.handle_hot_water_status, version=1
         )
         self.connector.thermostat.subscribe_status_event(
             self.handle_thermostat_status, version=2
