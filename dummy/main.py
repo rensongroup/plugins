@@ -275,7 +275,7 @@ class Dummy(OMPluginBase):
             logger.info("Registering hot water...")
             try:
                 hot_water_dto = self.connector.hot_water.register(
-                    external_id="hotwater1", name="boiler", min_temp=30.0, max_temp=70.0
+                    external_id="hotwater1", name="Dummy", min_temp=30.0, max_temp=70.0
                 )
                 logger.info("Registered %s" % hot_water_dto)
                 self._hot_water_dto = hot_water_dto
