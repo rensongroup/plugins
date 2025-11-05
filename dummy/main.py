@@ -36,8 +36,13 @@ class Dummy(OMPluginBase):
     name = "Dummy"
     version = "2.2.2"
     interfaces = [("config", "1.0")]
-
-    default_config = {}
+    default_config = {
+        "sensors": [],
+        "hot_water": False,
+        "measurement_counters": [],
+        "ventilation": False,
+        "notification": False,
+    }
 
     def __init__(self, webinterface, connector):
         super(Dummy, self).__init__(webinterface=webinterface, connector=connector)
