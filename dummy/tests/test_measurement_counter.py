@@ -13,7 +13,7 @@ class MeasurementCounterDummyTest(TestCase):
         from ..measurement_counter import MeasurementCounterDummy
         dto = self._make_dto(category=category, mc_type=mc_type)
         report_status = MagicMock()
-        return MeasurementCounterDummy(dto, report_status=report_status, mode=mode, offset=offset)
+        return MeasurementCounterDummy(dto, report_status=report_status, update_interval=30, mode=mode, offset=offset)
 
     def test_init_random_mode_defaults(self):
         dummy = self._make_dummy()

@@ -177,19 +177,19 @@ class Dummy(OMPluginBase):
         return json.dumps({"success": True})
 
     def _check_dummy_config(self, config):
-        if config.get("offset_mode") == "constant":
-            offset = config.get("offset", 0)
-            if offset < 0:
-                logger.error("Offset for measurement counter '%s' must be 0 or positive; using 0", config.get("name", "unknown"))
-                raise ValueError("Offset for measurement counter must be 0 or positive")
+        for mc in config.get("measurement_counters", []):
+            if mc.get("offset_mode") == "constant":
+                offset = mc.get("offset", 0)
+                if offset < 0:
+                    logger.error("Offset for measurement counter '%s' must be 0 or positive", mc.get("name", "unknown"))
+                    raise ValueError("Offset for measurement counter must be 0 or positive")
 
     def _save_config(self, config):
         for key in config:
             if isinstance(config[key], six.string_types):
                 config[key] = str(config[key])
-        # Check constrains for dummy config before saving
-        self._check_dummy_config(config)
         self._config_checker.check_config(config)
+        self._check_dummy_config(config)
         self._config = config
         self.write_config(config)
 
@@ -296,7 +296,7 @@ class Dummy(OMPluginBase):
             mc_offset = mc.get("offset", 0)
             if mc_offset_mode == "constant" and mc_offset < 0:
                 logger.error(
-                    "Offset for measurement counter '%s' must be 0 or positive; using 0",
+                    "Offset for measurement counter '%s' must be 0 or positive",
                     mc_name,
                 )
                 raise ValueError("Offset for measurement counter must be 0 or positive")
