@@ -1,8 +1,8 @@
 {
-    "version" : "2.2.3",
+    "version": "2.3.0",
     "name": "Dummy",
-    "description" : "dummy",
-    "metric_source"  : "dummy",
-    "metric_type" : "dummy",
+    "description": "dummy",
+    "metric_source": "dummy",
+    "metric_type": "dummy",
     "python_version": 3
 }
