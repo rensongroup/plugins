@@ -179,7 +179,10 @@ class Dummy(OMPluginBase):
     def _check_dummy_config(self, config):
         for mc in config.get("measurement_counters", []):
             if mc.get("offset_mode") == "constant":
-                offset = mc.get("offset", 0)
+                if "offset" not in mc:
+                    logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc.get("name", "unknown"))
+                    raise ValueError("Offset is required when offset_mode is 'constant'")
+                offset = mc["offset"]
                 if offset < 0:
                     logger.error("Offset for measurement counter '%s' must be 0 or positive", mc.get("name", "unknown"))
                     raise ValueError("Offset for measurement counter must be 0 or positive")
@@ -293,13 +296,18 @@ class Dummy(OMPluginBase):
             mc_type = self.connector.measurement_counter.Enums.Types(mc["type"])
             mc_category = self.connector.measurement_counter.Enums.Categories(mc["category"])
             mc_offset_mode = mc.get("offset_mode", "random")
-            mc_offset = mc.get("offset", 0)
-            if mc_offset_mode == "constant" and mc_offset < 0:
-                logger.error(
-                    "Offset for measurement counter '%s' must be 0 or positive",
-                    mc_name,
-                )
-                raise ValueError("Offset for measurement counter must be 0 or positive")
+            mc_offset = None
+            if mc_offset_mode == "constant":
+                if "offset" not in mc:
+                    logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc_name)
+                    raise ValueError("Offset is required when offset_mode is 'constant'")
+                mc_offset = mc["offset"]
+                if mc_offset < 0:
+                    logger.error(
+                        "Offset for measurement counter '%s' must be 0 or positive",
+                        mc_name,
+                    )
+                    raise ValueError("Offset for measurement counter must be 0 or positive")
             try:
                 external_id = f"dummy/{mc_name}"
                 mc_dto = self.connector.measurement_counter.register(
