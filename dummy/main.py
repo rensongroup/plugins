@@ -117,6 +117,17 @@ class Dummy(OMPluginBase):
                         "type": "enum",
                         "choices": self.connector.measurement_counter.Enums.Categories.list_values(),
                     },
+                    {
+                        "name": "offset_mode",
+                        "type": "enum",
+                        "description": "The mode for the offset: 'random' uses a random value, 'constant' uses a fixed offset",
+                        "choices": ["random", "constant"],
+                    },
+                    {
+                        "name": "offset",
+                        "type": "int",
+                        "description": "The constant offset value added each update cycle (used when offset_mode is 'constant'). Must be 0 or positive.",
+                    },
                 ],
             },
             {
@@ -304,6 +315,11 @@ class Dummy(OMPluginBase):
             mc_category = self.connector.measurement_counter.Enums.Categories(
                 mc["category"]
             )
+            mc_offset_mode = mc.get("offset_mode", "random")
+            mc_offset = mc.get("offset", 0)
+            if mc_offset_mode == 'constant' and mc_offset < 0:
+                logger.warning("Offset for measurement counter '%s' must be 0 or positive; using 0", mc_name)
+                mc_offset = 0
             try:
                 external_id = f"dummy/{mc_name}"
                 mc_dto = self.connector.measurement_counter.register(
@@ -319,7 +335,8 @@ class Dummy(OMPluginBase):
                 if mc_dummy is not None:
                     mc_dummy.stop()
                 mc_dummy = MeasurementCounterDummy(
-                    mc_dto, report_status=self.report_mc_status, update_interval=30
+                    mc_dto, report_status=self.report_mc_status, update_interval=30,
+                    mode=mc_offset_mode, offset=mc_offset
                 )
                 self._mc_dummies[mc_dto.external_id] = mc_dummy
                 mc_dummy.start()

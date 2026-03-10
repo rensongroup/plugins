@@ -28,10 +28,12 @@ class MeasurementCounterDummy:
         "cooling": ['total_consumed', 'realtime'],
     }
 
-    def __init__(self, measurement_counter_dto, report_status, update_interval=5):
+    def __init__(self, measurement_counter_dto, report_status, update_interval=5, mode='random', offset=0):
         self.measurement_counter_dto = measurement_counter_dto
         self.values = {k: 0 for k in MeasurementCounterDummy.CATEGORY_VALUE_MAP[self.measurement_counter_dto.category.value]}
         self.report_status = report_status
+        self.mode = mode
+        self.offset = offset
 
         self.thread = Thread(target=self.simulation)
         self.update_interval = update_interval
@@ -64,16 +66,22 @@ class MeasurementCounterDummy:
     def update_values(self):
         for key, value in self.values.items():
             if key != 'realtime':
-                range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(
-                    self.measurement_counter_dto.type, (20, 25)
-                )
-                offset = random.randint(range_min, range_max)
+                if self.mode == 'constant':
+                    offset = self.offset
+                else:
+                    range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(
+                        self.measurement_counter_dto.type, (20, 25)
+                    )
+                    offset = random.randint(range_min, range_max)
                 value += offset
                 self.values[key] = value
             else:
-                range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(
-                    self.measurement_counter_dto.type, (20, 25)
-                )
-                value = random.randint(range_min, range_max)
+                if self.mode == 'constant':
+                    value = self.offset
+                else:
+                    range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(
+                        self.measurement_counter_dto.type, (20, 25)
+                    )
+                    value = random.randint(range_min, range_max)
                 self.values[key] = value
         return True
