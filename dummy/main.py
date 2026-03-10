@@ -34,7 +34,7 @@ class Dummy(OMPluginBase):
     """
 
     name = "Dummy"
-    version = "2.2.3"
+    version = "2.3.0"
     interfaces = [("config", "1.0")]
     default_config = {
         "sensors": [],
@@ -69,22 +69,12 @@ class Dummy(OMPluginBase):
                             {
                                 "name": "physical",
                                 "type": "enum",
-                                "choices": list(
-                                    self.connector.sensor.Enums.UNIT_MAPPING.keys()
-                                ),
+                                "choices": list(self.connector.sensor.Enums.UNIT_MAPPING.keys()),
                             },
                             {
                                 "name": "unit",
                                 "type": "enum",
-                                "choices": list(
-                                    set(
-                                        [
-                                            item
-                                            for sublist in self.connector.sensor.Enums.UNIT_MAPPING.values()
-                                            for item in sublist
-                                        ]
-                                    )
-                                ),
+                                "choices": list(set([item for sublist in self.connector.sensor.Enums.UNIT_MAPPING.values() for item in sublist])),
                             },
                         ],
                     },
@@ -117,6 +107,17 @@ class Dummy(OMPluginBase):
                         "type": "enum",
                         "choices": self.connector.measurement_counter.Enums.Categories.list_values(),
                     },
+                    {
+                        "name": "offset_mode",
+                        "type": "enum",
+                        "description": "The mode for the offset: 'random' uses a random value, 'constant' uses a fixed offset",
+                        "choices": ["random", "constant"],
+                    },
+                    {
+                        "name": "offset",
+                        "type": "int",
+                        "description": "The constant offset value added each update cycle (used when offset_mode is 'constant'). Must be 0 or positive.",
+                    },
                 ],
             },
             {
@@ -133,29 +134,15 @@ class Dummy(OMPluginBase):
         self._config = self.read_config(Dummy.default_config)
         self._config_checker = PluginConfigChecker(self.config_description)
 
-        self.connector.sensor.subscribe_status_event(
-            self.handle_sensor_status, version=2
-        )
-        self.connector.ventilation.subscribe_status_event(
-            self.handle_ventilation_status, version=2
-        )
+        self.connector.sensor.subscribe_status_event(self.handle_sensor_status, version=2)
+        self.connector.ventilation.subscribe_status_event(self.handle_ventilation_status, version=2)
         self.connector.ventilation.attach_set_auto(self.ventilation_set_auto, version=1)
-        self.connector.ventilation.attach_set_manual(
-            self.ventilation_set_manual, version=1
-        )
-        self.connector.hot_water.subscribe_status_event(
-            self.handle_hot_water_status, version=1
-        )
-        self.connector.hot_water.attach_set_state(
-            self.handle_hot_water_set_state, version=1
-        )
-        self.connector.hot_water.attach_set_setpoint(
-            self.handle_hot_water_set_setpoint, version=1
-        )
+        self.connector.ventilation.attach_set_manual(self.ventilation_set_manual, version=1)
+        self.connector.hot_water.subscribe_status_event(self.handle_hot_water_status, version=1)
+        self.connector.hot_water.attach_set_state(self.handle_hot_water_set_state, version=1)
+        self.connector.hot_water.attach_set_setpoint(self.handle_hot_water_set_setpoint, version=1)
 
-        self.connector.measurement_counter.subscribe_status_event(
-            self.handle_measurement_counter_status, version=2
-        )
+        self.connector.measurement_counter.subscribe_status_event(self.handle_measurement_counter_status, version=2)
 
         self._metrics_queue = deque()
         self._wants_registration = True
@@ -189,11 +176,23 @@ class Dummy(OMPluginBase):
         logger.info("Saving configuration... Done")
         return json.dumps({"success": True})
 
+    def _check_dummy_config(self, config):
+        for mc in config.get("measurement_counters", []):
+            if mc.get("offset_mode") == "constant":
+                if "offset" not in mc:
+                    logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc.get("name", "unknown"))
+                    raise ValueError("Offset is required when offset_mode is 'constant'")
+                offset = mc["offset"]
+                if offset < 0:
+                    logger.error("Offset for measurement counter '%s' must be 0 or positive", mc.get("name", "unknown"))
+                    raise ValueError("Offset for measurement counter must be 0 or positive")
+
     def _save_config(self, config):
         for key in config:
             if isinstance(config[key], six.string_types):
                 config[key] = str(config[key])
         self._config_checker.check_config(config)
+        self._check_dummy_config(config)
         self._config = config
         self.write_config(config)
 
@@ -266,9 +265,7 @@ class Dummy(OMPluginBase):
                 self._ventilation_dto = ventilation_dto
                 if self._ventilation_dummy is not None:
                     self._ventilation_dummy.stop()
-                self._ventilation_dummy = VentilationDummy(
-                    ventilation_dto, report_status=self.report_ventilation_status
-                )
+                self._ventilation_dummy = VentilationDummy(ventilation_dto, report_status=self.report_ventilation_status)
                 self._ventilation_dummy.start()
             except Exception:
                 logger.exception("Error registering ventilation")
@@ -279,16 +276,12 @@ class Dummy(OMPluginBase):
         if self._config.get("hot_water", False):
             logger.info("Registering hot water...")
             try:
-                hot_water_dto = self.connector.hot_water.register(
-                    external_id="hotwater1", name="Dummy", min_temp=30.0, max_temp=70.0
-                )
+                hot_water_dto = self.connector.hot_water.register(external_id="hotwater1", name="Dummy", min_temp=30.0, max_temp=70.0)
                 logger.info("Registered %s" % hot_water_dto)
                 self._hot_water_dto = hot_water_dto
                 if self._hot_water_dummy is not None:
                     self._hot_water_dummy.stop()
-                self._hot_water_dummy = HotWaterDummy(
-                    hot_water_dto, report_status=self.report_hot_water_status
-                )
+                self._hot_water_dummy = HotWaterDummy(hot_water_dto, report_status=self.report_hot_water_status)
                 self._hot_water_dummy.start()
             except Exception:
                 logger.exception("Error registering hot_water")
@@ -301,9 +294,20 @@ class Dummy(OMPluginBase):
         for mc in mcs:
             mc_name = mc["name"]
             mc_type = self.connector.measurement_counter.Enums.Types(mc["type"])
-            mc_category = self.connector.measurement_counter.Enums.Categories(
-                mc["category"]
-            )
+            mc_category = self.connector.measurement_counter.Enums.Categories(mc["category"])
+            mc_offset_mode = mc.get("offset_mode", "random")
+            mc_offset = None
+            if mc_offset_mode == "constant":
+                if "offset" not in mc:
+                    logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc_name)
+                    raise ValueError("Offset is required when offset_mode is 'constant'")
+                mc_offset = mc["offset"]
+                if mc_offset < 0:
+                    logger.error(
+                        "Offset for measurement counter '%s' must be 0 or positive",
+                        mc_name,
+                    )
+                    raise ValueError("Offset for measurement counter must be 0 or positive")
             try:
                 external_id = f"dummy/{mc_name}"
                 mc_dto = self.connector.measurement_counter.register(
@@ -319,7 +323,11 @@ class Dummy(OMPluginBase):
                 if mc_dummy is not None:
                     mc_dummy.stop()
                 mc_dummy = MeasurementCounterDummy(
-                    mc_dto, report_status=self.report_mc_status, update_interval=30
+                    mc_dto,
+                    report_status=self.report_mc_status,
+                    update_interval=30,
+                    mode=mc_offset_mode,
+                    offset=mc_offset,
                 )
                 self._mc_dummies[mc_dto.external_id] = mc_dummy
                 mc_dummy.start()
@@ -338,11 +346,7 @@ class Dummy(OMPluginBase):
 
     @staticmethod
     def handle_sensor_status(event):
-        logger.debug(
-            "Received sensor status from gateway: {0} {1}".format(
-                event.data["id"], event.data["value"]
-            )
-        )
+        logger.debug("Received sensor status from gateway: {0} {1}".format(event.data["id"], event.data["value"]))
 
     # Measurement Counters
     def report_mc_status(self, mc_dto, total_consumed, total_injected, realtime):
@@ -356,9 +360,7 @@ class Dummy(OMPluginBase):
             total_consumed=total_consumed,
             total_injected=total_injected,
         )
-        self.connector.measurement_counter.report_realtime_state(
-            measurement_counter=mc_dto, value=realtime
-        )
+        self.connector.measurement_counter.report_realtime_state(measurement_counter=mc_dto, value=realtime)
 
     @measurement_counter_status(version=1)
     def measurement_counter_status(self, status):
@@ -366,20 +368,12 @@ class Dummy(OMPluginBase):
 
     @staticmethod
     def handle_measurement_counter_status(event):
-        logger.debug(
-            "Received measurement status from gateway: {0} {1}".format(
-                event.data["id"], event.data["value"]
-            )
-        )
+        logger.debug("Received measurement status from gateway: {0} {1}".format(event.data["id"], event.data["value"]))
 
     # ventilation units
 
     def report_ventilation_status(self, ventilation_dto, mode, level, remaining_time):
-        logger.debug(
-            "publish ventilation state for {}: {} {} {}".format(
-                ventilation_dto, mode, level, remaining_time
-            )
-        )
+        logger.debug("publish ventilation state for {}: {} {} {}".format(ventilation_dto, mode, level, remaining_time))
         self.connector.ventilation.report_status(
             ventilation=ventilation_dto,
             mode=mode,
@@ -392,11 +386,7 @@ class Dummy(OMPluginBase):
         self._ventilation_dummy.set_auto()
 
     def ventilation_set_manual(self, external_id, level, timer):
-        logger.debug(
-            "set ventilation of external_id {} with {} {}".format(
-                external_id, level, timer
-            )
-        )
+        logger.debug("set ventilation of external_id {} with {} {}".format(external_id, level, timer))
         self._ventilation_dummy.set_manual(level, timer)
 
     @ventilation_status(version=1)
@@ -416,14 +406,8 @@ class Dummy(OMPluginBase):
 
     # hot water units
 
-    def report_hot_water_status(
-        self, hot_water_dto, steering_power, current_temperature, setpoint, state
-    ):
-        logger.debug(
-            "publish hot_water state for {}: {} {} {} {}".format(
-                hot_water_dto, steering_power, current_temperature, setpoint, state
-            )
-        )
+    def report_hot_water_status(self, hot_water_dto, steering_power, current_temperature, setpoint, state):
+        logger.debug("publish hot_water state for {}: {} {} {} {}".format(hot_water_dto, steering_power, current_temperature, setpoint, state))
         self.connector.hot_water.report_status(
             hot_water=hot_water_dto,
             steering_power=steering_power,
@@ -433,17 +417,11 @@ class Dummy(OMPluginBase):
         )
 
     def handle_hot_water_set_setpoint(self, external_id, setpoint):
-        logger.debug(
-            "set hot water of external_id {} to setpoint {}".format(
-                external_id, setpoint
-            )
-        )
+        logger.debug("set hot water of external_id {} to setpoint {}".format(external_id, setpoint))
         self._hot_water_dummy.set_setpoint(setpoint)
 
     def handle_hot_water_set_state(self, external_id, state):
-        logger.debug(
-            "set hot water of external_id {} with state {}".format(external_id, state)
-        )
+        logger.debug("set hot water of external_id {} with state {}".format(external_id, state))
         self._hot_water_dummy.set_state(state)
 
     @hot_water_status(version=1)
