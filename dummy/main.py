@@ -317,9 +317,12 @@ class Dummy(OMPluginBase):
             )
             mc_offset_mode = mc.get("offset_mode", "random")
             mc_offset = mc.get("offset", 0)
-            if mc_offset_mode == 'constant' and mc_offset < 0:
-                logger.warning("Offset for measurement counter '%s' must be 0 or positive; using 0", mc_name)
-                mc_offset = 0
+            if mc_offset_mode == "constant" and mc_offset < 0:
+                logger.error(
+                    "Offset for measurement counter '%s' must be 0 or positive; using 0",
+                    mc_name,
+                )
+                raise ValueError("Offset for measurement counter must be 0 or positive")
             try:
                 external_id = f"dummy/{mc_name}"
                 mc_dto = self.connector.measurement_counter.register(
@@ -335,8 +338,11 @@ class Dummy(OMPluginBase):
                 if mc_dummy is not None:
                     mc_dummy.stop()
                 mc_dummy = MeasurementCounterDummy(
-                    mc_dto, report_status=self.report_mc_status, update_interval=30,
-                    mode=mc_offset_mode, offset=mc_offset
+                    mc_dto,
+                    report_status=self.report_mc_status,
+                    update_interval=30,
+                    mode=mc_offset_mode,
+                    offset=mc_offset,
                 )
                 self._mc_dummies[mc_dto.external_id] = mc_dummy
                 mc_dummy.start()

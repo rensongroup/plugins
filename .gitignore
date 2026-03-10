@@ -13,3 +13,6 @@ gateway_src
 
 
 **/__pycache__/**
+
+.venv/
+.vscode/
