@@ -16,3 +16,5 @@ gateway_src
 
 .venv/
 .vscode/
+
+.coverage
