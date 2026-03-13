@@ -112,7 +112,7 @@ class HomeAssistant(OMPluginBase):
     """
 
     name = "HomeAssistant"
-    version = "1.0.67"
+    version = "1.0.68"
     interfaces = [("config", "1.0")]
 
     config_description = [
@@ -1418,6 +1418,23 @@ class HomeAssistant(OMPluginBase):
                 )
             )
 
+    @staticmethod
+    def _input_class(name):
+        """Return (device_class, invert) based on keywords in the input name.
+
+        invert=True means the input is active (ON) when the contact is CLOSED,
+        but HA treats ON as open for door/window device classes — so we swap
+        payload_on/payload_off in the discovery config to compensate.
+        """
+        lower = name.lower()
+        if re.search(r"deur|door", lower):
+            return "door", True
+        if re.search(r"raam|window", lower):
+            return "window", True
+        if re.search(r"beweging|motion", lower):
+            return "motion", False
+        return None, False
+
     def _publish_input_discovery(self, input_id):
         inp = self._inputs.get(input_id)
         if inp is None:
@@ -1426,13 +1443,16 @@ class HomeAssistant(OMPluginBase):
         unique_id = "{device_id}_input_{id}".format(
             device_id=self._device_id, id=input_id
         )
+        device_class, invert = self._input_class(name)
         payload = {
             "name": None,  # entity IS the device — avoids "Name Name" doubling in HA
             "has_entity_name": True,
             "unique_id": unique_id,
             "state_topic": self._input_state_topic(input_id),
-            "payload_on": "ON",
-            "payload_off": "OFF",
+            # Inverted contacts: input ON = closed, but HA ON = open for
+            # door/window → swap so HA correctly shows Open/Closed.
+            "payload_on": "OFF" if invert else "ON",
+            "payload_off": "ON" if invert else "OFF",
             "retain": True,
             "device": self._device_info("input", input_id, name, room=inp.get("room")),
             "origin": {
@@ -1440,10 +1460,16 @@ class HomeAssistant(OMPluginBase):
                 "sw_version": HomeAssistant.version,
             },
         }
+        if device_class:
+            payload["device_class"] = device_class
         topic = self._discovery_topic("binary_sensor", "input_{0}".format(input_id))
         if self._mqtt_publish_discovery(topic, payload):
             logger.info(
-                "Published discovery for input {0} ({1})".format(input_id, name)
+                "Published discovery for input {0} ({1}){2}".format(
+                    input_id,
+                    name,
+                    " [device_class={0}]".format(device_class) if device_class else "",
+                )
             )
 
     def _publish_sensor_discovery(self, sensor_id):
