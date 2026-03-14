@@ -112,7 +112,7 @@ class HomeAssistant(OMPluginBase):
     """
 
     name = "HomeAssistant"
-    version = "1.0.68"
+    version = "1.0.71"
     interfaces = [("config", "1.0")]
 
     config_description = [
@@ -936,6 +936,31 @@ class HomeAssistant(OMPluginBase):
             return None
         return self._rooms.get(room_id)
 
+    def _room_slug(self, room_id):
+        """Return a sanitised lowercase slug for the room name, or None if unassigned.
+
+        Example: "Living Room" -> "living_room"
+        """
+        name = self._room_name(room_id)
+        if not name:
+            return None
+        return re.sub(r"[^a-z0-9]+", "_", name.lower().strip()).strip("_") or None
+
+    def _object_id(self, name, room_id=None):
+        """Return the HA entity object_id based on the entity name, prefixed with
+        the room slug when a room is assigned.
+
+        Example: room="Living Room", name="Another Screen" -> "living_room_another_screen"
+        Without room: "another_screen"
+        """
+        name_slug = (
+            re.sub(r"[^a-z0-9]+", "_", name.lower().strip()).strip("_") or "entity"
+        )
+        room_slug = self._room_slug(room_id)
+        if room_slug:
+            return "{0}_{1}".format(room_slug, name_slug)
+        return name_slug
+
     def _sensor_device_block(self, sensor_device_id, device_name, room=None):
         """Return the HA device block for a grouped physical sensor device."""
         block = {
@@ -1375,6 +1400,7 @@ class HomeAssistant(OMPluginBase):
             "name": None,  # entity IS the device — avoids "Name Name" doubling in HA
             "has_entity_name": True,
             "unique_id": unique_id,
+            "object_id": self._object_id(name, output.get("room")),
             "state_topic": self._output_state_topic(output_id),
             "command_topic": self._output_command_topic(output_id),
             "payload_on": "ON",
@@ -1448,6 +1474,7 @@ class HomeAssistant(OMPluginBase):
             "name": None,  # entity IS the device — avoids "Name Name" doubling in HA
             "has_entity_name": True,
             "unique_id": unique_id,
+            "object_id": self._object_id(name, inp.get("room")),
             "state_topic": self._input_state_topic(input_id),
             # Inverted contacts: input ON = closed, but HA ON = open for
             # door/window → swap so HA correctly shows Open/Closed.
@@ -1506,6 +1533,10 @@ class HomeAssistant(OMPluginBase):
             "name": entity_name,
             "has_entity_name": True,
             "unique_id": unique_id,
+            "object_id": self._object_id(
+                "{0}_{1}".format(device_name, physical) if physical else device_name,
+                sensor.get("room"),
+            ),
             "state_topic": self._sensor_state_topic(sensor_id),
             "unit_of_measurement": unit,
             "retain": True,
@@ -1540,6 +1571,7 @@ class HomeAssistant(OMPluginBase):
             "name": None,  # entity IS the device — avoids "Name Name" doubling in HA
             "has_entity_name": True,
             "unique_id": unique_id,
+            "object_id": self._object_id(name, shutter.get("room")),
             "device_class": "shutter",
             "command_topic": self._shutter_command_topic(shutter_id),
             "state_topic": self._shutter_state_topic(shutter_id),
