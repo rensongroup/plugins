@@ -1,0 +1,7 @@
+{
+	"version" : "0.0.1",
+	"description" : "Yet another SMA plugin",
+	"metric_source"  : "sma",
+	"metric_type" : "sma",
+	"python_version": 3
+}
