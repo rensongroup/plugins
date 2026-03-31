@@ -71,3 +71,10 @@ class MeasurementCounterDummyTest(TestCase):
         dummy = self._make_dummy(mode="constant", offset=1)
         result = dummy.update_values()
         self.assertTrue(result)
+
+    def test_update_values_constant_mode_negative_offset(self):
+        dummy = self._make_dummy(category="electric", mode="constant", offset=-5)
+        dummy.update_values()
+        self.assertEqual(dummy.values["total_consumed"], -5)
+        self.assertEqual(dummy.values["total_injected"], -5)
+        self.assertEqual(dummy.values["realtime"], -5)
