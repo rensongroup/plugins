@@ -34,7 +34,7 @@ class Dummy(OMPluginBase):
     """
 
     name = "Dummy"
-    version = "2.3.0"
+    version = "2.3.1"
     interfaces = [("config", "1.0")]
     default_config = {
         "sensors": [],
@@ -116,7 +116,7 @@ class Dummy(OMPluginBase):
                     {
                         "name": "offset",
                         "type": "int",
-                        "description": "The constant offset value added each update cycle (used when offset_mode is 'constant'). Must be 0 or positive.",
+                        "description": "The constant offset value added each update cycle (used when offset_mode is 'constant'). Can be negative.",
                     },
                 ],
             },
@@ -182,10 +182,6 @@ class Dummy(OMPluginBase):
                 if "offset" not in mc:
                     logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc.get("name", "unknown"))
                     raise ValueError("Offset is required when offset_mode is 'constant'")
-                offset = mc["offset"]
-                if offset < 0:
-                    logger.error("Offset for measurement counter '%s' must be 0 or positive", mc.get("name", "unknown"))
-                    raise ValueError("Offset for measurement counter must be 0 or positive")
 
     def _save_config(self, config):
         for key in config:
