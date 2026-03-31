@@ -297,6 +297,7 @@ class Dummy(OMPluginBase):
                 if "offset" not in mc:
                     logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc_name)
                     raise ValueError("Offset is required when offset_mode is 'constant'")
+                mc_offset = mc["offset"]
             try:
                 external_id = f"dummy/{mc_name}"
                 mc_dto = self.connector.measurement_counter.register(
