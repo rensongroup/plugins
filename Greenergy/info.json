@@ -1,0 +1,7 @@
+{
+    "version" : "0.0.21",
+    "description" : "Greenergy",
+    "metric_source"  : "Greenergy",
+    "metric_type" : "Greenergy",
+    "python_version": 3
+}
