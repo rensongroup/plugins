@@ -182,13 +182,16 @@ class Dummy(OMPluginBase):
                 if "offset" not in mc:
                     logger.error("Offset for measurement counter '%s' is required when offset_mode is 'constant'", mc.get("name", "unknown"))
                     raise ValueError("Offset is required when offset_mode is 'constant'")
+            elif mc.get("offset_mode") == "random":
+                # Put a default offset so config check passes, the offset value is not used in random mode
+                mc["offset"] = 0
 
     def _save_config(self, config):
         for key in config:
             if isinstance(config[key], six.string_types):
                 config[key] = str(config[key])
-        self._config_checker.check_config(config)
         self._check_dummy_config(config)
+        self._config_checker.check_config(config)
         self._config = config
         self.write_config(config)
 
