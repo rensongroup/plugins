@@ -83,15 +83,17 @@ class MeasurementCounterDummyTest(TestCase):
 class CheckDummyConfigTest(TestCase):
     def _check_dummy_config(self, config):
         import sys
+
         plugins_base_mock = MagicMock()
         plugins_base_mock.OMPluginBase = object
         mocks = {
-            'six': MagicMock(),
-            'plugins': MagicMock(),
-            'plugins.base': plugins_base_mock,
+            "six": MagicMock(),
+            "plugins": MagicMock(),
+            "plugins.base": plugins_base_mock,
         }
         with patch.dict(sys.modules, mocks):
             from ..main import Dummy
+
             Dummy._check_dummy_config(None, config)
 
     def test_random_mode_sets_offset_to_zero(self):
