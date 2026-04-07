@@ -80,6 +80,33 @@ class MeasurementCounterDummyTest(TestCase):
         self.assertEqual(dummy.values["realtime"], -5)
 
 
+class AddDefaultsTest(TestCase):
+    def _add_defaults(self, config):
+        import sys
+
+        plugins_base_mock = MagicMock()
+        plugins_base_mock.OMPluginBase = object
+        mocks = {
+            "six": MagicMock(),
+            "plugins": MagicMock(),
+            "plugins.base": plugins_base_mock,
+        }
+        with patch.dict(sys.modules, mocks):
+            from ..main import Dummy
+
+            Dummy._add_defaults_to_optional_fields(None, config)
+
+    def test_random_mode_sets_offset_to_zero_when_missing(self):
+        mc = {"name": "test", "offset_mode": "random"}
+        self._add_defaults({"measurement_counters": [mc]})
+        self.assertEqual(mc["offset"], 0)
+
+    def test_random_mode_does_not_overwrite_existing_offset(self):
+        mc = {"name": "test", "offset_mode": "random", "offset": 99}
+        self._add_defaults({"measurement_counters": [mc]})
+        self.assertEqual(mc["offset"], 99)
+
+
 class CheckDummyConfigTest(TestCase):
     def _check_dummy_config(self, config):
         import sys
@@ -95,16 +122,6 @@ class CheckDummyConfigTest(TestCase):
             from ..main import Dummy
 
             Dummy._check_dummy_config(None, config)
-
-    def test_random_mode_sets_offset_to_zero(self):
-        mc = {"name": "test", "offset_mode": "random"}
-        self._check_dummy_config({"measurement_counters": [mc]})
-        self.assertEqual(mc["offset"], 0)
-
-    def test_random_mode_overwrites_existing_offset(self):
-        mc = {"name": "test", "offset_mode": "random", "offset": 99}
-        self._check_dummy_config({"measurement_counters": [mc]})
-        self.assertEqual(mc["offset"], 0)
 
     def test_constant_mode_with_offset_passes(self):
         mc = {"name": "test", "offset_mode": "constant", "offset": 5}
