@@ -34,7 +34,7 @@ class Dummy(OMPluginBase):
     """
 
     name = "Dummy"
-    version = "2.3.1"
+    version = "2.3.2"
     interfaces = [("config", "1.0")]
     default_config = {
         "sensors": [],
@@ -176,6 +176,12 @@ class Dummy(OMPluginBase):
         logger.info("Saving configuration... Done")
         return json.dumps({"success": True})
 
+    def _add_defaults_to_optional_fields(self, config):
+        for mc in config.get("measurement_counters", []):
+            if mc.get("offset_mode") == "random":
+                # offset is not used in random mode, default to 0 so the config checker passes
+                mc.setdefault("offset", 0)
+
     def _check_dummy_config(self, config):
         for mc in config.get("measurement_counters", []):
             if mc.get("offset_mode") == "constant":
@@ -187,6 +193,7 @@ class Dummy(OMPluginBase):
         for key in config:
             if isinstance(config[key], six.string_types):
                 config[key] = str(config[key])
+        self._add_defaults_to_optional_fields(config)
         self._config_checker.check_config(config)
         self._check_dummy_config(config)
         self._config = config
