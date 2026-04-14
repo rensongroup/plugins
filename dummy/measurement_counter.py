@@ -50,6 +50,8 @@ class MeasurementCounterDummy:
             try:
                 changed = self.update_values()
                 if changed:
+                    # For reporting, we want to ensure that consumed and injected values are non-negative,
+                    # and that realtime is reported as is.
                     consumed = max(0, self.values.get("total_consumed", 0))
                     injected = max(0, -1 * self.values.get("total_injected", 0))
                     realtime = self.values.get("realtime", 0)
@@ -63,6 +65,7 @@ class MeasurementCounterDummy:
         for key, value in self.values.items():
             if key != "realtime":
                 if self.mode == "constant":
+                    # For electric category, we want to convert the offset from W to Wh based on the update interval
                     offset = self.offset * self.update_interval / 3600
                 else:
                     range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(self.measurement_counter_dto.type, (20, 25))
