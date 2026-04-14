@@ -34,7 +34,7 @@ class Dummy(OMPluginBase):
     """
 
     name = "Dummy"
-    version = "2.3.2"
+    version = "2.3.3"
     interfaces = [("config", "1.0")]
     default_config = {
         "sensors": [],
