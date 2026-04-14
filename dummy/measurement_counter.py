@@ -50,8 +50,9 @@ class MeasurementCounterDummy:
             try:
                 changed = self.update_values()
                 if changed:
-                    consumed = self.values.get("total_consumed", 0)
-                    injected = self.values.get("total_injected", 0)
+                    # Ensure consumed and injected are non-negative; realtime is reported as-is.
+                    consumed = max(0, self.values.get("total_consumed", 0))
+                    injected = max(0, -1 * self.values.get("total_injected", 0))
                     realtime = self.values.get("realtime", 0)
                     # logger.debug("Report change: MeasurementCounter [{}]: consumed = {}; injected = {}; realtime = {}".format(self.measurement_counter_dto.name, consumed, injected, realtime))
                     self.report_status(self.measurement_counter_dto, consumed, injected, realtime)
@@ -63,7 +64,8 @@ class MeasurementCounterDummy:
         for key, value in self.values.items():
             if key != "realtime":
                 if self.mode == "constant":
-                    offset = self.offset
+                    # Convert rate (per hour) to quantity consumed/injected during this interval
+                    offset = self.offset * self.update_interval / 3600
                 else:
                     range_min, range_max = MeasurementCounterDummy.STATUS_RANGES.get(self.measurement_counter_dto.type, (20, 25))
                     offset = random.randint(range_min, range_max)

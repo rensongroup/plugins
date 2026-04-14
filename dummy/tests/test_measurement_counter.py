@@ -14,7 +14,7 @@ class MeasurementCounterDummyTest(TestCase):
 
         dto = self._make_dto(category=category, mc_type=mc_type)
         report_status = MagicMock()
-        return MeasurementCounterDummy(dto, report_status=report_status, update_interval=30, mode=mode, offset=offset)
+        return MeasurementCounterDummy(dto, report_status=report_status, update_interval=update_interval, mode=mode, offset=offset)
 
     def test_init_random_mode_defaults(self):
         dummy = self._make_dummy()
@@ -29,17 +29,19 @@ class MeasurementCounterDummyTest(TestCase):
     def test_update_values_constant_mode_adds_fixed_offset(self):
         dummy = self._make_dummy(category="electric", mode="constant", offset=10)
         dummy.update_values()
-        self.assertEqual(dummy.values["total_consumed"], 10)
-        self.assertEqual(dummy.values["total_injected"], 10)
+        expected = 10 * 30 / 3600
+        self.assertAlmostEqual(dummy.values["total_consumed"], expected)
+        self.assertAlmostEqual(dummy.values["total_injected"], expected)
         self.assertEqual(dummy.values["realtime"], 10)
 
     def test_update_values_constant_mode_accumulates_counter_values(self):
         dummy = self._make_dummy(category="electric", mode="constant", offset=5)
         dummy.update_values()
         dummy.update_values()
-        # Counter values (total_consumed, total_injected) accumulate
-        self.assertEqual(dummy.values["total_consumed"], 10)
-        self.assertEqual(dummy.values["total_injected"], 10)
+        # Counter values (total_consumed, total_injected) accumulate in Wh
+        expected = 2 * 5 * 30 / 3600
+        self.assertAlmostEqual(dummy.values["total_consumed"], expected)
+        self.assertAlmostEqual(dummy.values["total_injected"], expected)
         # Realtime value does not accumulate - it is set to the offset each time
         self.assertEqual(dummy.values["realtime"], 5)
 
@@ -63,7 +65,7 @@ class MeasurementCounterDummyTest(TestCase):
     def test_update_values_non_electric_category_constant(self):
         dummy = self._make_dummy(category="water", mode="constant", offset=7)
         dummy.update_values()
-        self.assertEqual(dummy.values["total_consumed"], 7)
+        self.assertAlmostEqual(dummy.values["total_consumed"], 7 * 30 / 3600)
         self.assertEqual(dummy.values["realtime"], 7)
         self.assertNotIn("total_injected", dummy.values)
 
@@ -75,9 +77,66 @@ class MeasurementCounterDummyTest(TestCase):
     def test_update_values_constant_mode_negative_offset(self):
         dummy = self._make_dummy(category="electric", mode="constant", offset=-5)
         dummy.update_values()
-        self.assertEqual(dummy.values["total_consumed"], -5)
-        self.assertEqual(dummy.values["total_injected"], -5)
+        expected = -5 * 30 / 3600
+        self.assertAlmostEqual(dummy.values["total_consumed"], expected)
+        self.assertAlmostEqual(dummy.values["total_injected"], expected)
         self.assertEqual(dummy.values["realtime"], -5)
+
+    def test_update_values_constant_mode_wh_conversion(self):
+        # 1W over 3600s interval = 1 Wh per tick
+        dummy = self._make_dummy(category="electric", mode="constant", offset=1, update_interval=3600)
+        dummy.update_values()
+        self.assertAlmostEqual(dummy.values["total_consumed"], 1.0)
+        self.assertAlmostEqual(dummy.values["total_injected"], 1.0)
+
+    def test_simulation_positive_offset_reports_consumed_not_injected(self):
+        """A positive offset accumulates in total_consumed; injected is clamped to zero."""
+
+        dummy = self._make_dummy(category="electric", mode="constant", offset=100)
+        # Run one update cycle directly so values accumulate
+        dummy.update_values()
+        consumed = max(0, dummy.values.get("total_consumed", 0))
+        injected = max(0, -1 * dummy.values.get("total_injected", 0))
+        self.assertGreater(consumed, 0)
+        self.assertEqual(injected, 0)
+
+    def test_simulation_negative_offset_reports_injected_not_consumed(self):
+        """A negative offset accumulates in total_injected; consumed is clamped to zero."""
+        dummy = self._make_dummy(category="electric", mode="constant", offset=-100)
+        dummy.update_values()
+        consumed = max(0, dummy.values.get("total_consumed", 0))
+        injected = max(0, -1 * dummy.values.get("total_injected", 0))
+        self.assertEqual(consumed, 0)
+        self.assertGreater(injected, 0)
+
+    def test_simulation_calls_report_status_with_sign_corrected_values(self):
+        """simulation() passes max(0, consumed) and max(0, -injected) to report_status."""
+        from unittest.mock import patch
+
+        dummy = self._make_dummy(category="electric", mode="constant", offset=-2300, update_interval=30)
+
+        call_args = []
+
+        def fake_report(dto, consumed, injected, realtime):
+            call_args.append((consumed, injected, realtime))
+
+        dummy.report_status = fake_report
+
+        # Patch time.sleep and stop the loop after one iteration
+        _iteration = [0]
+
+        def fake_sleep(_):
+            dummy._running = False
+
+        with patch("time.sleep", side_effect=fake_sleep):
+            dummy._running = True
+            dummy.simulation()
+
+        self.assertEqual(len(call_args), 1)
+        consumed, injected, realtime = call_args[0]
+        self.assertEqual(consumed, 0, "consumed should be 0 for a negative offset")
+        self.assertGreater(injected, 0, "injected should be positive for a negative offset")
+        self.assertEqual(realtime, -2300)
 
 
 class AddDefaultsTest(TestCase):
