@@ -34,7 +34,7 @@ class Dummy(OMPluginBase):
     """
 
     name = "Dummy"
-    version = "2.3.3"
+    version = "2.3.4"
     interfaces = [("config", "1.0")]
     default_config = {
         "sensors": [],
@@ -317,17 +317,34 @@ class Dummy(OMPluginBase):
                 logger.info("Registered %s" % mc_dto)
                 self._mc_dtos.append(mc_dto)
                 mc_dummy = self._mc_dummies.get(mc_dto.external_id)
-                if mc_dummy is not None:
+
+                if mc_dummy is not None and (
+                    mc_dummy.measurement_counter_dto.type != mc_type or mc_dummy.measurement_counter_dto.category != mc_category
+                ):
+                    # type or category changed: values dict would be wrong, full restart needed
+                    logger.info("MeasurementCounter dummy %s type/category changed, restarting", mc_name)
                     mc_dummy.stop()
-                mc_dummy = MeasurementCounterDummy(
-                    mc_dto,
-                    report_status=self.report_mc_status,
-                    update_interval=30,
-                    mode=mc_offset_mode,
-                    offset=mc_offset,
-                )
-                self._mc_dummies[mc_dto.external_id] = mc_dummy
-                mc_dummy.start()
+                    mc_dummy = None
+                if mc_dummy is None:
+                    # new measurement counter or type/category changed: create new dummy with correct values dict
+                    mc_dummy = MeasurementCounterDummy(
+                        mc_dto,
+                        report_status=self.report_mc_status,
+                        update_interval=30,
+                        mode=mc_offset_mode,
+                        offset=mc_offset,
+                    )
+                    self._mc_dummies[mc_dto.external_id] = mc_dummy
+                    mc_dummy.start()
+                else:
+                    # update mode/offset in-place so the running thread picks them up without resetting totals
+                    if mc_dummy.mode != mc_offset_mode or mc_dummy.offset != mc_offset:
+                        logger.info("MeasurementCounter dummy %s updating mode/offset in-place", mc_name)
+                        mc_dummy.mode = mc_offset_mode
+                        mc_dummy.offset = mc_offset
+                    else:
+                        logger.info("MeasurementCounter dummy %s config unchanged, skipping", mc_name)
+
             except Exception:
                 logger.exception("Error registering sensor %s" % mc)
 
