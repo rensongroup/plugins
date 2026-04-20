@@ -45,13 +45,16 @@ class Pushsafer(OMPluginBase):
                                         'description': 'The device or device group id where the message to be send.'},
                                        {'name': 'icon',
                                         'type': 'str',
-                                        'description': 'The icon which is displayed with the message (a number 1-98).'},
+                                        'description': 'The icon which is displayed with the message (a number 1-181).'},
+                                       {'name': 'iconcolor',
+                                        'type': 'str',
+                                        'description': 'The icons color e.g. #FF0000.'},
                                        {'name': 'sound',
                                         'type': 'int',
-                                        'description': 'The notification sound of message (a number 0-28 or empty).'},
+                                        'description': 'The notification sound of message (a number 0-62 or empty).'},
                                        {'name': 'vibration',
                                         'type': 'str',
-                                        'description': 'How often the device should vibrate (a number 1-3 or empty).'},
+                                        'description': 'How often the device should vibrate (a number 0-3 or empty).'},
                                        {'name': 'url',
                                         'type': 'str',
                                         'description': 'A URL or URL scheme: https://www.pushsafer.com/en/url_schemes'},
@@ -60,10 +63,31 @@ class Pushsafer(OMPluginBase):
                                         'description': 'the URLs title'},
                                        {'name': 'time2live',
                                         'type': 'str',
-                                        'description': 'Integer number 0-43200: Time in minutes after which message automatically gets purged.'}]}]
+                                        'description': 'Integer number 0-43200: Time in minutes after which message automatically gets purged.'}]},
+                                       {'name': 'priority',
+                                        'type': 'str',
+                                        'description': 'Integer number: -2 = lowest priority, -1 = lower priority, 0 = normal priority, 1 = high priority, 2 = highest priority (Critical Alerts).'}]},
+                                       {'name': 'retry',
+                                        'type': 'str',
+                                        'description': 'Integer number 60-10800: Time in seconds, after a message should resend.'}]}
+                                       {'name': 'expire',
+                                        'type': 'str',
+                                        'description': 'Integer number 60-10800: Time in seconds, after the retry/resend should stop.'}]}
+                                       {'name': 'confirm',
+                                        'type': 'str',
+                                        'description': 'Integer number 10-10800: Time in seconds after which a message should be sent again before it is confirmed.'}]}
+                                       {'name': 'answer',
+                                        'type': 'str',
+                                        'description': 'Integer number: 1 = Answer is possible or 0 = Answer is not possible.'}]}
+                                       {'name': 'answeroptions',
+                                        'type': 'str',
+                                        'description': 'predefined answer options divided by a pipe character e.g. Yes|No|Maybe'}]}
+                                       {'name': 'answerforce',
+                                        'type': 'str',
+                                        'description': 'Integer number: Force Answer 1 = yes or 0 = no'}]}]
 
-    default_config = {'privatekey': '', 'input_id': -1, 'message': '', 'title': 'OpenMotics', 'device': '', 'icon': '1', 'sound': '', 'vibration': '',
-                      'url': '', 'urltitle': '', 'time2live': ''}
+    default_config = {'privatekey': '', 'input_id': -1, 'message': '', 'title': 'OpenMotics', 'device': '', 'icon': '1', 'iconcolor': '', 'sound': '', 'vibration': '',
+                      'url': '', 'urltitle': '', 'time2live': '', 'priority': '0', 'retry': '', 'expire': '', 'confirm': '', 'answer': '0', 'answeroptions': '', 'answerforce': '0'}
 
     def __init__(self, webinterface, connector):
         super(Pushsafer, self).__init__(webinterface=webinterface,
@@ -116,11 +140,19 @@ class Pushsafer(OMPluginBase):
                             't': mapping['title'],
                             'd': mapping['device'],
                             'i': mapping['icon'],
+                            'c': mapping['iconcolor'],
                             's': mapping['sound'],
                             'v': mapping['vibration'],
                             'u': mapping['url'],
                             'ut': mapping['urltitle'],
-                            'l': mapping['time2live']}
+                            'l': mapping['time2live'],
+                            'pr': mapping['priority'],
+                            're': mapping['retry'],
+                            'ex': mapping['expire'],
+                            'cr': mapping['confirm'],
+                            'a': mapping['answer'],
+                            'ao': mapping['answeroptions'],
+                            'af': mapping['answerforce']}
                     thread = Thread(target=self._send_data, args=(data,))
                     thread.start()
                     data_send = True
