@@ -1,7 +1,7 @@
 {
-    "version" : "3.0.4",
-    "description" : "MQTTClient",
-    "metric_source"  : "mqttclient",
-    "metric_type" : "mqttclient",
-    "python_version": 3
+	"version" : "3.1.2",
+	"description" : "MQTTClient",
+	"metric_source"  : "mqttclient",
+	"metric_type" : "mqttclient",
+	"python_version": 3
 }
