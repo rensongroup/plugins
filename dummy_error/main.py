@@ -23,7 +23,7 @@ class DummyError(OMPluginBase):
     """
 
     name = "DummyError"
-    version = "0.0.1"
+    version = "0.0.2"
     interfaces = [("config", "1.0")]
 
     default_config = {}
