@@ -4,6 +4,7 @@ FoxEss plugin
 
 import json
 import logging
+import os
 import time
 import sys
 from pathlib import Path
@@ -29,9 +30,11 @@ from plugins.base import (
     measurement_counter_status,
 )
 
-POLL_INTERVAL_REAL = 120 # seconds
-POLL_INTERVAL_GENERATION = 30 * 60 # seconds
-GENERATION_POLL_DIV = POLL_INTERVAL_GENERATION / POLL_INTERVAL_REAL
+TICK_INTERVAL = 5  # seconds - base loop interval
+POLL_REAL_TICKS = 120 // TICK_INTERVAL  # poll API every 120s (24 ticks)
+POLL_GENERATION_TICKS = (30 * 60) // TICK_INTERVAL  # poll generation every 30min (360 ticks)
+FAILURE_NOTIFY_THRESHOLD = 10  # consecutive failures before notifying
+FAILURE_NOTIFY_COOLDOWN = 24 * 60 * 60  # seconds between failure notifications
 
 class FoxEss(OMPluginBase):
     """
@@ -39,7 +42,7 @@ class FoxEss(OMPluginBase):
     """
 
     name = "FoxEss"
-    version = "0.1.3"
+    version = "0.1.6"
     interfaces = [("config", "1.0")]
 
     default_config = {}
@@ -80,8 +83,15 @@ class FoxEss(OMPluginBase):
             )
         )
         self._battery_full_sent = False
-        self._poll_counter = 0
+        self._tick_counter = 0
         self._generation = None
+        self._solar_injection = 0.0
+        self._solar_real = 0.0
+        self._bat_energy = 0.0
+        self._bat_real = 0.0
+        self._last_reported = None
+        self._consecutive_failures = 0
+        self._last_failure_notification = 0.0
         logger.info("Started FoxEss plugin {0}".format(FoxEss.version))
 
     @om_expose
@@ -116,7 +126,16 @@ class FoxEss(OMPluginBase):
         except Exception:
             return "Europe/Brussels"
 
-    def poll_foxess(self):
+    @staticmethod
+    def _get_variable(real, variable):
+        """Extract a variable value from the real-time data list. Returns None if not found."""
+        entry = next((v for v in real if v.get("variable") == variable), None)
+        if entry is None:
+            return None
+        return entry.get("value")
+
+    def _configure_api(self):
+        """Configure the foxess API module and ensure connection is valid. Returns True on success."""
         f.api_key = self._config.get("api_key")
         if self._config.get("device_sn"):
             f.device_sn = self._config.get("device_sn")
@@ -125,47 +144,58 @@ class FoxEss(OMPluginBase):
         site = f.get_site()
         if site is None:
             logger.error("Error calling Fox Ess API: do you have a valid token?")
-            return
-
+            return False
         f.get_logger()
         f.get_device()
+        return True
 
-        if (self._poll_counter % GENERATION_POLL_DIV) == 0:
-            # only poll total generation each 30 min
-            self._generation = f.get_generation()
-        self._poll_counter += 1
+    def _poll_generation(self):
+        """Fetch cumulative generation from the API and update cached solar injection. Returns True on success."""
+        generation = f.get_generation()
+        if generation is None:
+            logger.warning("get_generation() returned None, using previous value")
+            return False
+        self._generation = generation
+        cumulative = generation.get("cumulative")
+        if cumulative is not None:
+            self._solar_injection = cumulative
+        else:
+            logger.warning("get_generation() returned no 'cumulative' field")
+        return True
 
+    def _poll_real(self):
+        """Fetch real-time inverter data and update cached battery/solar values. Returns True on success."""
         real = f.get_real()
-        # print(real)
-        soc = next(
-            filter(lambda v: v["variable"] == "SoC", real), {}
-        ).get("value")
-        bat_energy = next(
-            filter(lambda v: v["variable"] == "ResidualEnergy", real), {}
-        ).get("value")
-        bat_charge = next(
-            filter(lambda v: v["variable"] == "batChargePower", real), {}
-        ).get("value")
-        bat_discharge = next(
-            filter(lambda v: v["variable"] == "batDischargePower", real), {}
-        ).get("value")
-        bat_real = bat_charge - bat_discharge
-        solar_injection = self._generation["cumulative"]
-        solar_real = -next(
-            filter(lambda v: v["variable"] == "pvPower", real), {}
-        ).get("value")
+        if real is None:
+            logger.error("Unknown error calling Fox Ess API: no data received")
+            return False
 
-        logger.info(f"Solar: tot {solar_injection} kWh, real {solar_real} kW")
-        logger.info(f"Battery: energy {bat_energy} kWh, real {bat_real} kW")
-        self.report_mc_status(
-            self._mc_battery, bat_energy * 1000, 0, bat_real * 1000
-        )
-        self.report_mc_status(
-            self._mc_solar, 0, solar_injection * 1000, solar_real * 1000
-        )
+        bat_energy = self._get_variable(real, "ResidualEnergy")
+        bat_charge = self._get_variable(real, "batChargePower")
+        bat_discharge = self._get_variable(real, "batDischargePower")
+        pv_power = self._get_variable(real, "pvPower")
 
-        # send a notification when the battery is full
-        if soc > 99:
+        if bat_energy is not None:
+            self._bat_energy = bat_energy
+        else:
+            logger.warning("Missing 'ResidualEnergy' in real-time data, using previous value")
+
+        if bat_charge is not None and bat_discharge is not None:
+            self._bat_real = bat_charge - bat_discharge
+        else:
+            logger.warning("Missing battery charge/discharge in real-time data, using previous value")
+
+        if pv_power is not None:
+            self._solar_real = -pv_power
+        else:
+            logger.warning("Missing 'pvPower' in real-time data, using previous value")
+
+        self._check_battery_full(self._get_variable(real, "SoC"))
+        return True
+
+    def _check_battery_full(self, soc):
+        """Send a one-shot notification when battery SoC crosses 100%."""
+        if soc is not None and soc > 99:
             if not self._battery_full_sent:
                 logger.info("Battery is full again")
                 self.connector.notification.send(
@@ -176,15 +206,60 @@ class FoxEss(OMPluginBase):
         else:
             self._battery_full_sent = False
 
+    def report_foxess(self):
+        """Report cached values to the connector."""
+        state = (self._solar_injection, self._solar_real, self._bat_energy, self._bat_real)
+        if state != self._last_reported:
+            logger.info(f"Solar: tot {self._solar_injection} kWh, real {self._solar_real} kW")
+            logger.info(f"Battery: energy {self._bat_energy} kWh, real {self._bat_real} kW")
+            self._last_reported = state
+        self.report_mc_status(
+            self._mc_battery, self._bat_energy * 1000, 0, self._bat_real * 1000
+        )
+        self.report_mc_status(
+            self._mc_solar, 0, self._solar_injection * 1000, self._solar_real * 1000
+        )
+
+    def _track_poll_failure(self):
+        """Track a consecutive poll failure and notify once per day after threshold."""
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= FAILURE_NOTIFY_THRESHOLD:
+            now = time.time()
+            if now - self._last_failure_notification >= FAILURE_NOTIFY_COOLDOWN:
+                logger.error(f"FoxEss polling failed {self._consecutive_failures} times in a row")
+                self.connector.notification.send(
+                    topic="FoxEss",
+                    message=f"Polling failed {self._consecutive_failures} consecutive times",
+                )
+                self._last_failure_notification = now
+
+    def _reset_poll_failures(self):
+        """Reset failure counter after a successful poll."""
+        self._consecutive_failures = 0
+
     @background_task
     def loop(self):
         while True:
             now = time.time()
             try:
-                self.poll_foxess()
+                if self._tick_counter % POLL_REAL_TICKS == 0:
+                    success = False
+                    if self._configure_api():
+                        gen_ok = True
+                        if self._tick_counter % POLL_GENERATION_TICKS == 0:
+                            gen_ok = self._poll_generation()
+                        real_ok = self._poll_real()
+                        success = gen_ok and real_ok
+                    if success:
+                        self._reset_poll_failures()
+                    else:
+                        self._track_poll_failure()
+                self.report_foxess()
             except Exception:
                 logger.exception("Error while polling Fox Ess")
-            time.sleep(POLL_INTERVAL_REAL - (time.time() - now) % POLL_INTERVAL_REAL)
+                self._track_poll_failure()
+            self._tick_counter += 1
+            time.sleep(TICK_INTERVAL - (time.time() - now) % TICK_INTERVAL)
 
     # Measurement Counters
     def report_mc_status(self, mc_dto, total_consumed, total_injected, realtime):
@@ -214,9 +289,13 @@ if __name__ == "__main__":
     connector = Connector(forward_callback_actions=lambda *args, **kwargs: None, forward_status_event_subscriptions=lambda *args, **kwargs: None, event_loop=eventloop)
     web_dispatcher = WebInterfaceDispatcher("FoxEss")
 
-    # replace by actual key for local development
+    # replace by actual key for local development by env FOXESS_API_KEY
+    import os
     FoxEss.read_config = MagicMock(
-        return_value={"api_key": "<API_KEY>"}
+        return_value={"api_key": os.getenv("FOXESS_API_KEY", "")}
     )
     plugin = FoxEss(webinterface=web_dispatcher, connector=connector)
-    plugin.poll_foxess()
+    if plugin._configure_api():
+        plugin._poll_generation()
+        plugin._poll_real()
+        plugin.report_foxess()
