@@ -1,5 +1,5 @@
 {
-    "version" : "0.1.6",
+    "version" : "0.1.7",
     "description" : "FoxEss plugin",
     "metric_source"  : "foxess",
     "metric_type" : "foxess",

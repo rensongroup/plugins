@@ -42,7 +42,7 @@ class FoxEss(OMPluginBase):
     """
 
     name = "FoxEss"
-    version = "0.1.6"
+    version = "0.1.7"
     interfaces = [("config", "1.0")]
 
     default_config = {}
