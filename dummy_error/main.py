@@ -23,7 +23,7 @@ class DummyError(OMPluginBase):
     """
 
     name = "DummyError"
-    version = "0.0.2"
+    version = "0.0.3"
     interfaces = [("config", "1.0")]
 
     default_config = {}
@@ -300,7 +300,10 @@ class DummyError(OMPluginBase):
 
     @staticmethod
     def handle_hot_water_status(event):
-        event_data = event.data or {}
+        if isinstance(event, dict):
+            event_data = event
+        else:
+            event_data = getattr(event, "data", None) or {}
         logger.info(
             "Received hot_water status from gateway: {0} {1}".format(
                 event_data.get("id"),
@@ -310,7 +313,10 @@ class DummyError(OMPluginBase):
 
     @staticmethod
     def handle_thermostat_status(event):
-        event_data = event.data or {}
+        if isinstance(event, dict):
+            event_data = event
+        else:
+            event_data = getattr(event, "data", None) or {}
         logger.info(
             "Received thermostat status from gateway: {0} {1}".format(
                 event_data.get("id"),
