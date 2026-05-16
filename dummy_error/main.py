@@ -23,7 +23,7 @@ class DummyError(OMPluginBase):
     """
 
     name = "DummyError"
-    version = "0.0.1"
+    version = "0.0.3"
     interfaces = [("config", "1.0")]
 
     default_config = {}
@@ -231,7 +231,6 @@ class DummyError(OMPluginBase):
             except Exception:
                 logger.exception(f"Error registering thermostat {thermostat_id}")
 
-    
     def report_thermostat_errors(self):
         for thermostat_id, errors in self._thermostat_dtos.items():
             for error in errors:
@@ -270,7 +269,6 @@ class DummyError(OMPluginBase):
                 except Exception as e:
                     logger.exception(f"Error reporting hot water {hotwater_id} error: {error} exception: {e}")
 
-
     def clear_all_errors(self):
         for hotwater_id in self._hot_water_dtos.keys():
             try:
@@ -297,24 +295,31 @@ class DummyError(OMPluginBase):
                 all_errors[f"thermostat_{thermostat_id}"] = [error.json() for error in errors]
             except Exception as e:
                 logger.exception(f"Error fetching thermostat {thermostat_id} errors: {e}")
-        
+
         logger.info(f"Fetched all errors: {all_errors}")
 
-    
     @staticmethod
     def handle_hot_water_status(event):
+        if isinstance(event, dict):
+            event_data = event
+        else:
+            event_data = getattr(event, "data", None) or {}
         logger.info(
             "Received hot_water status from gateway: {0} {1}".format(
-                event.data["id"],
-                event.data["errors"],
+                event_data.get("id"),
+                event_data.get("errors", []),
             )
         )
 
     @staticmethod
     def handle_thermostat_status(event):
+        if isinstance(event, dict):
+            event_data = event
+        else:
+            event_data = getattr(event, "data", None) or {}
         logger.info(
             "Received thermostat status from gateway: {0} {1}".format(
-                event.data["id"],
-                event.data["errors"],
+                event_data.get("id"),
+                event_data.get("errors", []),
             )
         )

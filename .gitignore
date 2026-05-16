@@ -13,10 +13,13 @@
 # gateway source simlink
 gateway_src
 
-
+# python compiled files
+*.pyc
 **/__pycache__/**
+
 # virtual environments
 *.venv/*
 
-# python compiled files
-*.pyc
+# test results
+.coverage
+

@@ -2,20 +2,77 @@
 An astronomical plugin, for providing the system with astronomical data (e.g. whether it's day or not, based on the sun's location)
 """
 
+from __future__ import annotations
+
 import six
 import time
 import requests
 import logging
 import json
-from threading import Thread, Event
+from enum import Enum
+from threading import Event
 from datetime import datetime, timedelta
 from .configuration import ConfigurationFactory
 from plugins.base import om_expose, background_task, OMPluginBase, PluginConfigChecker
+from collections import defaultdict, deque
+
+import typing
+if typing.TYPE_CHECKING:
+    from typing import Deque
 
 
 logger = logging.getLogger(__name__)
 
 config_factory = ConfigurationFactory()
+
+class AstroAction:
+    """
+    Represents an action that can be executed based on astronomical data.
+    This class is used to encapsulate the details of the action, such as its type and parameters.
+    """
+
+    class ActionType(Enum):
+        bit_clear = 'bit_clear'
+        bit_set = 'bit_set'
+        group_action = 'group_action'
+
+    def __init__(self,
+                 timestamp:datetime,
+                 sun_location:str,
+                 action_type:ActionType,
+                 action_number: int):
+        self.timestamp = timestamp  # The time when the action should be executed
+        self.sun_location = sun_location  # The location of the sun (e.g., sunrise, sunset, etc.)
+        self.action_type = action_type  # The type of action (e.g., group action, validation bit)
+        self.action_number = action_number  # The identifier for the action
+
+    def action_string(self, include_timestamp:bool=True):
+        """
+        Returns a string representation of the action, including its type and number.
+        """
+        timestamp_str = self.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        action_str = None
+        if self.action_type == AstroAction.ActionType.bit_set:
+            action_str =  f"Set Validation Bit {self.action_number}"
+        elif self.action_type == AstroAction.ActionType.bit_clear:
+            action_str =  f"Clear Validation Bit {self.action_number}"
+        elif self.action_type == AstroAction.ActionType.group_action:
+            action_str =  f"Execute Group Action {self.action_number}"
+
+        if action_str:
+            if include_timestamp:
+                return f"{timestamp_str}: {action_str}"
+            else:
+                return action_str
+        else:
+            raise ValueError(f"Unknown action type: {self.action_type}")
+
+    def __repr__(self):
+        return f"AstroAction(timestamp={self.timestamp}, sun_location={self.sun_location}, " \
+               f"action_type={self.action_type}, action_number={self.action_number})"
+
+    def __str__(self):
+        return self.__repr__()
 
 
 class Astro(OMPluginBase):
@@ -24,7 +81,7 @@ class Astro(OMPluginBase):
     """
 
     name = 'Astro'
-    version = '1.1.2'
+    version = '1.1.3'
     interfaces = [('config', '1.0')]
 
     config_description = config_factory.get_config_description()
@@ -37,7 +94,6 @@ class Astro(OMPluginBase):
 
         self._config = self.read_config(Astro.default_config)
         self._config_checker = PluginConfigChecker(Astro.config_description)
-
         self._parsed_config = None
 
         self._latitude = None
@@ -46,14 +102,10 @@ class Astro(OMPluginBase):
         self._group_actions = {}
         self._bits = {}
 
+        self._trigger_event = Event()
+        self._action_queue: Deque[AstroAction] = deque()  # Queue for actions to be executed
         self._last_request_date = None
-        self._execution_plan = {}
-
-        self._sleeper = Event()
-        self._sleep_until = 0
-
-        thread = Thread(target=self._sleep_manager)
-        thread.start()
+        self._last_api_response = None
 
         self._read_config()
 
@@ -61,7 +113,6 @@ class Astro(OMPluginBase):
 
     def _read_config(self):
         logger.info('Reading configuration...')
-        logger.info('Configuration: {0}'.format(self._config))
         self._parsed_config = config_factory.parse_configuration(self._config)
 
         try:
@@ -123,7 +174,7 @@ class Astro(OMPluginBase):
         self._enabled = enabled and (self._group_actions or self._bits)
         self._last_request_date = None
         logger.info('Astro is {0}abled'.format('en' if self._enabled else 'dis'))
-        self._sleeper.set()
+        self._trigger_event.set()
 
     @staticmethod
     def _format_date(date, timezone=None):
@@ -171,37 +222,6 @@ class Astro(OMPluginBase):
                     entry['group_action_id']
                 ))
 
-    def _print_execution_plan(self):
-        if not self._execution_plan:
-            logger.info('Empty execution plan for {0}'.format(self._last_request_date.strftime('%Y-%m-%d')))
-            return
-        logger.info('Execution plan for {0}:'.format(self._last_request_date.strftime('%Y-%m-%d')))
-        for date in sorted(self._execution_plan.keys()):
-            date_plan = self._execution_plan.get(date, [])
-            if not date_plan:
-                continue
-            for action in date_plan:
-                if action['task'] == 'group_action':
-                    logger.info('* {0}: Execute Automation {1} ({2})'.format(Astro._format_date(date),
-                                                                             action['data']['group_action_id'],
-                                                                             action['source']))
-                elif action['task'] == 'bit':
-                    logger.info('* {0}: {1} Validation Bit {2} ({3})'.format(Astro._format_date(date),
-                                                                             action['data']['action'].capitalize(),
-                                                                             action['data']['bit_id'],
-                                                                             action['source']))
-
-    def _sleep_manager(self):
-        while True:
-            if not self._sleeper.is_set() and self._sleep_until < time.time():
-                self._sleeper.set()
-            time.sleep(5)
-
-    def _sleep(self, timestamp):
-        self._sleep_until = timestamp
-        self._sleeper.clear()
-        self._sleeper.wait()
-
     def _convert(self, dt_string):
         import pytz
 
@@ -214,147 +234,216 @@ class Astro(OMPluginBase):
                 return None
             return date
         except Exception as ex:
-            logger.exception('Could not parse date {0}'.format(dt_string))
+            logger.exception('Could not parse date {0}: {1}'.format(dt_string, ex))
             return None
 
-    @background_task
-    def run(self):
-        while True:
-            from pytz import reference
+    def _get_queue_string(self):
+        """
+        Returns a string representation of the action queue, showing the actions that are scheduled to be executed.
+        """
+        if not self._action_queue:
+            return 'No actions in queue'
+        actions_str =  ', '.join(['{}'.format(action.action_string()) for action in self._action_queue])
+        return 'Actions in queue: {}'.format(actions_str)
 
-            if not self._enabled:
-                self._sleep(time.time() + 30)
-                continue
 
-            now = datetime.now(reference.LocalTimezone())
-            today = datetime(now.year, now.month, now.day,
-                             tzinfo=reference.LocalTimezone())
-            tomorrow = today + timedelta(days=1)
+    def _execute_action(self, action:AstroAction) -> None:
+        if action.action_type == AstroAction.ActionType.group_action:
+            group_action_id = action.action_number
             try:
-                if today != self._last_request_date:
-                    self._last_request_date = today
-                    self._build_execution_plan(now=now, date=now)
-                    self._print_execution_plan()
-
-                if not self._execution_plan:
-                    logger.info('Suspending. Wakeup scheduled at {0}...'.format(Astro._format_date(tomorrow)))
-                    sleep = (tomorrow - now).total_seconds()
-                    self._sleep(time.time() + sleep + 5)
-                    continue
-
-                next_action_date = tomorrow
-                next_action_delta = timedelta(days=2)
-                for date in list(self._execution_plan.keys()):
-                    delta = abs(date - now)
-                    if delta > timedelta(minutes=5):
-                        if date > now and delta < next_action_delta:
-                            next_action_date = date
-                            next_action_delta = delta
-                        continue
-                    plan = self._execution_plan.get(date, [])
-                    if plan:
-                        logger.info('Executing plan...')
-                    for entry in plan:
-                        if entry['task'] == 'group_action':
-                            group_action_id = entry['data']['group_action_id']
-                            try:
-                                result = json.loads(self.webinterface.do_basic_action(action_type=2,
-                                                                                      action_number=group_action_id))
-                                if not result.get('success'):
-                                    raise RuntimeError(result.get('msg', 'Unknown error'))
-                                logger.info('* Executing Automation {0}: Done'.format(group_action_id))
-                            except Exception as ex:
-                                logger.error('* Executing Automation {0} failed: {1}'.format(group_action_id, ex))
-                        elif entry['task'] == 'bit':
-                            bit_id = entry['data']['bit_id']
-                            action_words = 'Setting' if entry['data']['action'] == 'set' else 'Clearing'
-                            action = 237 if entry['data']['action'] == 'set' else 238
-                            try:
-                                result = json.loads(self.webinterface.do_basic_action(action_type=action,
-                                                                                      action_number=bit_id))
-                                if not result.get('success'):
-                                    raise RuntimeError(result.get('msg', 'Unknown error'))
-                                logger.info('* {0} Validation Bit {1}: Done'.format(action_words, bit_id))
-                            except Exception as ex:
-                                logger.error('* {0} Validation Bit {1} failed: {2}'.format(action_words, bit_id, ex))
-                    self._execution_plan.pop(date, None)
-                logger.info('Processing complete')
-                logger.info('Suspending. Wakeup scheduled at {0}...'.format(Astro._format_date(next_action_date)))
-                sleep = (next_action_date - now).total_seconds()
-                self._sleep(time.time() + sleep + 5)
+                result = json.loads(self.webinterface.do_basic_action(action_type=2,
+                                                                      action_number=group_action_id))
+                if not result.get('success'):
+                    raise RuntimeError(result.get('msg', 'Unknown error'))
+                logger.info('* Executing Automation {0}: Done'.format(group_action_id))
             except Exception as ex:
-                logger.info('Unexpected error while processing: {0}'.format(ex))
-                logger.info('Suspending. Wakeup scheduled at {0}...'.format(Astro._format_date(tomorrow)))
-                sleep = (tomorrow - now).total_seconds()
-                self._sleep(time.time() + sleep + 5)
+                logger.error('* Executing Automation {0} failed: {1}'.format(group_action_id, ex))
+        elif action.action_type in (AstroAction.ActionType.bit_set, AstroAction.ActionType.bit_clear):
+            bit_id = action.action_number
+            action_words = 'Setting' if action.action_type == AstroAction.ActionType.bit_set else 'Clearing'
+            ba_action = 237 if action.action_type == AstroAction.ActionType.bit_set else 238
+            try:
+                result = json.loads(self.webinterface.do_basic_action(action_type=ba_action,
+                                                                      action_number=bit_id))
+                if not result.get('success'):
+                    raise RuntimeError(result.get('msg', 'Unknown error'))
+                logger.info('* {0} Validation Bit {1}: Done'.format(action_words, bit_id))
+            except Exception as ex:
+                logger.error('* {0} Validation Bit {1} failed: {2}'.format(action_words, bit_id, ex))
 
-    def _build_execution_plan(self, now, date):
-        retries = 5
-        while retries > 0:
-            retries = retries - 1
+
+    def _build_execution_plan(self) -> None:
+        """
+        This method builds the execution plan based on the astronomical data and the configured actions.
+        It checks the sunrise, sunset, and twilight times to determine when actions should be executed.
+
+        First it requests the sunrise-sunset API for the current timestamps needed to trigger.
+        Then it processes the data to create a plan of actions that will be executed at the appropriate times.
+        """
+        from pytz import reference
+        now = datetime.now(reference.LocalTimezone())
+
+        action_plan = defaultdict(list)
+
+        # do not request data if we already have it for today
+        # and rate limit the times tried to fetch data to max once per hour
+        # if there are still actions in the queue, also do not request data
+        if (self._last_request_date is not None and now - self._last_request_date < timedelta(hours=1)) or \
+                self._action_queue:
+            logger.debug('Data already fetched for today, skipping request')
+            return
+
+        data = None
+        for _ in range(3):
             try:
                 req = requests.get('http://api.sunrise-sunset.org/json?lat={0}&lng={1}&date={2}&formatted=0'.format(
-                    self._latitude, self._longitude, date.strftime('%Y-%m-%d')
+                    self._latitude, self._longitude, now.strftime('%Y-%m-%d')
                 ))
                 if req.status_code != 200:
                     raise RuntimeError("Invalid request response")
                 data = req.json()
                 if data['status'] != 'OK':
                     raise RuntimeError(data['status'])
-                execution_plan = {}
-                field_map = {
-                        'sunrise': 'sunrise',
-                        'civil dawn': 'civil_twilight_begin',
-                        'nautical dawn': 'nautical_twilight_begin',
-                        'astronomical dawn': 'astronomical_twilight_begin',
-                        'astronomical dusk': 'astronomical_twilight_end',
-                        'nautical dusk': 'nautical_twilight_end',
-                        'civil dusk': 'civil_twilight_end',
-                        'sunset': 'sunset',
-                        'solar noon': 'solar_noon',
-                    }
-                for sun_location in set(self._group_actions.keys()) | set(self._bits.keys()):
-                    group_actions = self._group_actions.get(sun_location, [])
-                    bits = self._bits.get(sun_location, [])
-
-                    if not group_actions and not bits:
-                        continue
-                    date = self._convert(data['results'].get(field_map.get(sun_location, 'x')))
-                    if date is None:
-                        continue
-
-                    for entry in bits:
-                        entry_date = date + timedelta(minutes=entry['offset'])
-                        if entry_date < now:
-                            continue
-                        date_plan = execution_plan.setdefault(entry_date, [])
-                        task = {'task': 'bit',
-                                        'source': '{0}{1}'.format(
-                                            sun_location,
-                                            Astro._format_offset(entry['offset'])
-                                        ),
-                                        'data': {'action': entry['action'],
-                                                'bit_id': entry['bit_id']}}
-                        date_plan.append(task)
-
-                    for entry in group_actions:
-                        entry_date = date + timedelta(minutes=entry['offset'])
-                        if entry_date < now:
-                            continue
-                        date_plan = execution_plan.setdefault(entry_date, [])
-                        date_plan.append({'task': 'group_action',
-                                        'source': '{0}{1}'.format(
-                                            sun_location,
-                                            Astro._format_offset(entry['offset'])
-                                        ),
-                                        'data': {'group_action_id': entry['group_action_id']}})
-                self._execution_plan = execution_plan
                 break
+            except RuntimeError as ex:
+                logger.exception('Could not fetch or load data: {0}'.format(ex))
+                continue
             except Exception as ex:
                 logger.exception('Could not fetch or load data: {0}'.format(ex))
-                self._execution_plan = {}
-                logger.info("sleeping 5 seconds and retrying...")
-                time.sleep(5)
+
+            time.sleep(10)
+
+        # # Left in here for testing purposes, to simulate the API returning data
+        # if data is not None:
+        #     logger.info('Fetched data from sunrise-sunset API: {0}'.format(data))
+        #     now_1_minute = now + timedelta(seconds=10) - timedelta(hours=2)
+        #     now_2_minute = now + timedelta(seconds=20) - timedelta(hours=2)
+        #     now_3_minute = now + timedelta(seconds=30) - timedelta(hours=2)
+        #     data['results']['civil_twilight_end'] = now_1_minute.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+        #     data['results']['nautical_twilight_end'] = now_2_minute.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+        #     data['results']['astronomical_twilight_end'] = now_3_minute.strftime('%Y-%m-%dT%H:%M:%S+00:00')
+
+
+        self._last_request_date = now
+        self._last_api_response = data
+
+        if self._last_api_response is None:
+            logger.error('No data received from the sunrise-sunset API.')
+            return
+
+        try:
+            field_map = {
+                    'sunrise': 'sunrise',
+                    'civil dawn': 'civil_twilight_begin',
+                    'nautical dawn': 'nautical_twilight_begin',
+                    'astronomical dawn': 'astronomical_twilight_begin',
+                    'astronomical dusk': 'astronomical_twilight_end',
+                    'nautical dusk': 'nautical_twilight_end',
+                    'civil dusk': 'civil_twilight_end',
+                    'sunset': 'sunset',
+                    'solar noon': 'solar_noon',
+                }
+            for sun_location in set(self._group_actions.keys()) | set(self._bits.keys()):
+                group_actions = self._group_actions.get(sun_location, [])
+                bits = self._bits.get(sun_location, [])
+
+                if not group_actions and not bits:
+                    continue
+                date = self._convert(self._last_api_response['results'].get(field_map.get(sun_location, 'x')))
+                if date is None:
+                    continue
+                date = date.astimezone(reference.LocalTimezone())
+
+                for entry in bits:
+                    entry_date = date + timedelta(minutes=entry['offset'])
+                    if entry_date < now:
+                        continue
+                    action = AstroAction.ActionType.bit_set if entry['action'] == 'set' else AstroAction.ActionType.bit_clear
+                    task = AstroAction(
+                            timestamp=entry_date,
+                            sun_location=sun_location,
+                            action_type=action,
+                            action_number=entry['bit_id'])
+                    self._action_queue.append(task)
+                    action_plan[entry_date].append(task)
+
+                for entry in group_actions:
+                    entry_date = date + timedelta(minutes=entry['offset'])
+                    if entry_date < now:
+                        continue
+                    task = AstroAction(
+                            timestamp=entry_date,
+                            sun_location=sun_location,
+                            action_type=AstroAction.ActionType.group_action,
+                            action_number=entry['group_action_id'])
+                    action_plan[entry_date].append(task)
+                    self._action_queue.append(task)
+
+        except Exception as ex:
+            logger.exception('Could not fetch or load data: {0}'.format(ex))
+            logger.info("sleeping 5 seconds and retrying...")
+            time.sleep(5)
+
+
+        # sort the action queue by timestamp
+        self._action_queue = deque(sorted(self._action_queue, key=lambda x: x.timestamp))
+
+        logger.info('Execution plan built for {0}:'.format(self._last_request_date.strftime('%Y-%m-%d')))
+        for timestamp, actions in sorted(action_plan.items(), key=lambda x: x[0]):
+            act_str = ', '.join([action.action_string(include_timestamp=False) for action in actions])
+            logger.info(f" * {timestamp.strftime('%Y-%m-%dT%H:%M:%S')}: {act_str}")
+
+
+
+    def _run_actions(self):
+        """
+        This method checks if there are any actions scheduled based on the astronomical data
+        and executes them accordingly.
+        """
+
+        if not self._last_request_date:
+            self._action_queue.clear()
+            self._build_execution_plan()
+
+        if not self._action_queue:
+            self._build_execution_plan()
+
+        # check the same condition again, as the build_execution_plan might have added actions
+        if not self._action_queue:
+            return
+
+        from pytz import reference
+        now = datetime.now(reference.LocalTimezone())
+
+        while True:
+            if not self._action_queue:
+                logger.info('No actions left in queue. Re-building execution plan.')
+                break
+            last_action = self._action_queue[0]
+            if last_action.timestamp < now + timedelta(seconds=5):  # give it a 5 second buffer
+                self._execute_action(last_action)
+                self._action_queue.popleft()
+            else:
+                break
+
+
+    @background_task
+    def run(self):
+        """
+        The main loop of the plugin, which runs in a background thread.
+        It checks if there are any pending actions based on the astronomical data
+        and executes actions accordingly.
+        """
+        logger.info('Astro plugin run started')
+        while True:
+            self._trigger_event.wait(timeout=10)
+            if self._trigger_event.is_set():
+                self._trigger_event.clear()
+
+            try:
+                self._run_actions()
+            except Exception as ex:
+                logger.exception('Error in Astro plugin run loop: {0}'.format(ex))
 
     @om_expose
     def get_config_description(self):
