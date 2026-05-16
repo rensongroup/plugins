@@ -26,8 +26,6 @@ from plugins.base import (
     PluginConfigChecker,
     background_task,
     om_expose,
-    sensor_status,
-    measurement_counter_status,
 )
 
 TICK_INTERVAL = 5  # seconds - base loop interval
@@ -92,6 +90,7 @@ class FoxEss(OMPluginBase):
         self._last_reported = None
         self._consecutive_failures = 0
         self._last_failure_notification = 0.0
+        self._api_configured = False
         logger.info("Started FoxEss plugin {0}".format(FoxEss.version))
 
     @om_expose
@@ -135,18 +134,21 @@ class FoxEss(OMPluginBase):
         return entry.get("value")
 
     def _configure_api(self):
-        """Configure the foxess API module and ensure connection is valid. Returns True on success."""
+        """Configure the foxess API module, caching after first success. Returns True on success."""
         f.api_key = self._config.get("api_key")
         if self._config.get("device_sn"):
             f.device_sn = self._config.get("device_sn")
         f.time_zone = self.get_timezone()
         f.residual_handling = 1
+        if self._api_configured:
+            return True
         site = f.get_site()
         if site is None:
             logger.error("Error calling Fox Ess API: do you have a valid token?")
             return False
         f.get_logger()
         f.get_device()
+        self._api_configured = True
         return True
 
     def _poll_generation(self):
@@ -253,6 +255,7 @@ class FoxEss(OMPluginBase):
                     if success:
                         self._reset_poll_failures()
                     else:
+                        self._api_configured = False
                         self._track_poll_failure()
                 self.report_foxess()
             except Exception:

@@ -1,15 +1,11 @@
 from unittest import TestCase
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from plugin_runtime.web import WebInterfaceDispatcher
 from plugin_runtime.connectors.connector import Connector
 from gateway.utilities.event_loop import EventLoop
 
 from foxess.main import FoxEss, POLL_REAL_TICKS, POLL_GENERATION_TICKS, FAILURE_NOTIFY_THRESHOLD
-
-import logging
-
-logger = logging.getLogger(__name__)
 
 # Real data captured from the API on 2026-05-09
 MOCK_REAL_DATA = [

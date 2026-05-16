@@ -7,11 +7,11 @@ By:       Tony Matthews
 ##################################################################################################
 # Code for getting and setting inverter data via the Fox ESS cloud api site, including
 # getting forecast data from solcast.com.au and sending inverter data to pvoutput.org
-# ALL RIGHTS ARE RESERVED © Tony Matthews 2024
+# Copyright (c) 2023-2025 Tony Matthews
+# Licensed under the MIT License - see https://github.com/TonyM1958/FoxESS-Cloud
 ##################################################################################################
 
 version = "2.9.11"
-print(f"FoxESS-Cloud Open API version {version}")
 
 debug_setting = 1
 
