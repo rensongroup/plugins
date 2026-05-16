@@ -1,20 +1,25 @@
 # Packages
 *.tgz
 *.md5
+*.whl
 
 #OS
 .DS_Store
 
 # Editors
 .idea
+.vscode
 
 # gateway source simlink
 gateway_src
 
-
+# python compiled files
+*.pyc
 **/__pycache__/**
 
-.venv/
-.vscode/
+# virtual environments
+*.venv/*
 
+# test results
 .coverage
+
