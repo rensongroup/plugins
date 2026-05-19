@@ -1,0 +1,7 @@
+{
+    "version" : "0.0.5",
+    "description" : "TeslaCharger",
+    "metric_source"  : "TeslaCharger",
+    "metric_type" : "TeslaCharger",
+    "python_version": 3
+}
