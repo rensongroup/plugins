@@ -21,7 +21,7 @@ class Syncer(OMPluginBase):
     """
 
     name = 'Syncer'
-    version = '0.0.8'
+    version = '0.0.10'
     interfaces = [('config', '1.0')]
 
     config_description = [{
@@ -596,7 +596,7 @@ class Syncer(OMPluginBase):
                                             headers=gateway.get('headers'))
                 response_data = json.loads(response.text)
                 if response_data.get('success', False) is False:
-                    if response_data.get('msg') == 'invalid_token':
+                    if "Invalid session token is passed" in response_data.get('msg') or "invalid_token" in response_data.get('msg'):
                         logger.info('Token expired')
                         gateway["headers"]["Authorization"] = None
                         retries += 1
