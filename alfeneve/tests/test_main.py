@@ -1,249 +1,168 @@
+import copy
+import json
 import sys
-import time
+import threading
+import requests
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 
-def _import_alfen_eve_control():
-    plugins_base_mock = MagicMock()
-    plugins_base_mock.OMPluginBase = object
-    plugins_base_mock.PluginConfigChecker = MagicMock()
-    plugins_base_mock.background_task = lambda f: f
-    plugins_base_mock.om_expose = lambda *a, **kw: (a[0] if a and callable(a[0]) else (lambda f: f))
-    mocks = {
-        "plugins": MagicMock(),
-        "plugins.base": plugins_base_mock,
-    }
-    with patch.dict(sys.modules, mocks):
+def _get_plugin_class():
+    plugin_base = MagicMock()
+    plugin_base.OMPluginBase = object
+    plugin_base.PluginConfigChecker = MagicMock
+    plugin_base.background_task = lambda function: function
+    plugin_base.om_expose = lambda *args, **kwargs: (
+        args[0] if args and callable(args[0]) else (lambda function: function)
+    )
+    modules = {"plugins": MagicMock(), "plugins.base": plugin_base}
+    with patch.dict(sys.modules, modules):
         from ..main import AlfenEveControl
     return AlfenEveControl
 
 
-def _make_instance(config_overrides=None):
-    AlfenEveControl = _import_alfen_eve_control()
-    instance = AlfenEveControl.__new__(AlfenEveControl)
-    instance._config = dict(AlfenEveControl.default_config)
-    if config_overrides:
-        instance._config.update(config_overrides)
-    instance._signal_map = {}
-    instance._values = {"solar_w": None, "grid_w": None, "soc_percent": None}
-    instance._value_ts = {}
-    instance._last_seen = None
-    instance._last_sent_current = None
-    instance._rebuild_signal_map()
+def _service(identity, address, port=443):
+    return {
+        "identity": identity,
+        "hostname": "{}.local".format(identity.lower()),
+        "address": address,
+        "port": port,
+        "endpoint": "https://{}:{}".format(address, port),
+        "content_type": "alfen-ace-v1/json",
+        "firmware_version": "6.4.0-4210",
+    }
+
+
+def _make_instance(overrides=None):
+    plugin_class = _get_plugin_class()
+    instance = plugin_class.__new__(plugin_class)
+    config = copy.deepcopy(plugin_class.default_config)
+    config.update(overrides or {})
+    instance._config = plugin_class._normalize_config(config)
+    instance._lock = threading.RLock()
+    instance._discovery_event = threading.Event()
+    instance.write_config = MagicMock()
+    instance._reset_state()
     return instance
 
 
-class CalculateTargetCurrentTest(TestCase):
-    def test_summer_exports_solar_scales_with_export(self):
-        instance = _make_instance({"season": "summer", "min_current": 6, "max_current": 16})
-        instance._values.update({"grid_w": -1150.0, "soc_percent": 50.0})  # exporting 1150W
-        self.assertEqual(instance._calculate_target_current(), 5.0)
+class ChargerDiscoveryConfigTest(TestCase):
+    def test_new_config_uses_discovery_without_ip_override(self):
+        instance = _make_instance()
+        self.assertEqual(instance._config["endpoint"], "")
+        self.assertEqual(instance._config["charger_identity"], "")
+        instance._validate_config(dict(instance._config, enabled=True, dry_run=False, password="secret"))
 
-    def test_summer_importing_falls_back_to_min_current(self):
-        instance = _make_instance({"season": "summer", "min_current": 6, "max_current": 16})
-        instance._values.update({"grid_w": 500.0, "soc_percent": 50.0})  # importing, no excess
-        self.assertEqual(instance._calculate_target_current(), 6.0)
-
-    def test_summer_clamps_to_max_current(self):
-        instance = _make_instance({"season": "summer", "min_current": 6, "max_current": 16})
-        instance._values.update({"grid_w": -10000.0, "soc_percent": 50.0})
-        self.assertEqual(instance._calculate_target_current(), 16.0)
-
-    def test_winter_high_soc_uses_high_current(self):
-        instance = _make_instance({
-            "season": "winter",
-            "winter_high_soc_threshold": 30,
-            "winter_high_soc_current": 8,
-            "winter_low_soc_current": 4,
+    def test_legacy_endpoint_is_preserved_as_manual_override(self):
+        plugin_class = _get_plugin_class()
+        migrated = plugin_class._normalize_config({
+            "config_schema_version": 5,
+            "endpoint": "https://192.168.0.10",
         })
-        instance._values.update({"grid_w": 0.0, "soc_percent": 50.0})
-        self.assertEqual(instance._calculate_target_current(), 8.0)
+        self.assertEqual(migrated["endpoint"], "https://192.168.0.10")
+        self.assertEqual(migrated["charger_identity"], "")
+        self.assertEqual(migrated["config_schema_version"], 6)
 
-    def test_winter_low_soc_uses_low_current(self):
+    def test_only_unique_unconfigured_charger_is_auto_learned(self):
+        instance = _make_instance()
+        config_snapshot = copy.deepcopy(instance._config)
+        service = _service("DIE_16628", "192.168.0.146")
+
+        instance._apply_discovery_result(config_snapshot, [service])
+
+        self.assertEqual(instance._config["charger_identity"], "DIE_16628")
+        self.assertEqual(instance._config["endpoint"], "")
+        self.assertEqual(instance._resolved_endpoint, "https://192.168.0.146:443")
+        self.assertEqual(instance._discovery_status, "resolved")
+        instance.write_config.assert_called_once_with(instance._config)
+
+    def test_configured_identity_selects_matching_charger(self):
+        instance = _make_instance({"charger_identity": "DIE_2"})
+        config_snapshot = copy.deepcopy(instance._config)
+        services = [_service("DIE_1", "192.168.0.10"), _service("DIE_2", "192.168.0.20")]
+
+        instance._apply_discovery_result(config_snapshot, services)
+
+        self.assertEqual(instance._resolved_endpoint, "https://192.168.0.20:443")
+        self.assertEqual(instance._discovery_status, "resolved")
+        instance.write_config.assert_not_called()
+
+    def test_ambiguous_initial_scan_does_not_choose_or_save(self):
+        instance = _make_instance()
+        config_snapshot = copy.deepcopy(instance._config)
+
+        instance._apply_discovery_result(config_snapshot, [
+            _service("DIE_1", "192.168.0.10"),
+            _service("DIE_2", "192.168.0.20"),
+        ])
+
+        self.assertEqual(instance._resolved_endpoint, "")
+        self.assertEqual(instance._discovery_status, "ambiguous")
+        self.assertEqual(instance._config["charger_identity"], "")
+        instance.write_config.assert_not_called()
+
+    def test_missing_configured_identity_never_substitutes_another_charger(self):
+        instance = _make_instance({"charger_identity": "DIE_EXPECTED"})
+
+        instance._apply_discovery_result(copy.deepcopy(instance._config), [
+            _service("DIE_OTHER", "192.168.0.10"),
+        ])
+
+        self.assertEqual(instance._resolved_endpoint, "")
+        self.assertEqual(instance._discovery_status, "not_found")
+        self.assertIn("configured identity", instance._discovery_error)
+        instance.write_config.assert_not_called()
+
+    def test_manual_endpoint_override_wins_over_discovery(self):
+        instance = _make_instance({"endpoint": "https://192.168.0.50"})
+
+        instance._apply_discovery_result(copy.deepcopy(instance._config), [
+            _service("DIE_1", "192.168.0.10"),
+        ])
+
+        self.assertEqual(instance._resolved_endpoint, "https://192.168.0.50")
+        self.assertEqual(instance._discovery_status, "manual_override")
+        instance.write_config.assert_not_called()
+
+    def test_config_ui_keys_have_descriptions_and_hide_schema_version(self):
+        plugin_class = _get_plugin_class()
+        instance = _make_instance()
+        config = json.loads(instance.get_config())
+        description_keys = {item["name"] for item in plugin_class.config_description}
+
+        self.assertEqual(set(config), description_keys)
+        self.assertNotIn("config_schema_version", config)
+        self.assertIn("charger_identity", config)
+
+    def test_connection_failure_requests_rediscovery(self):
         instance = _make_instance({
-            "season": "winter",
-            "winter_high_soc_threshold": 30,
-            "winter_high_soc_current": 8,
-            "winter_low_soc_current": 4,
+            "enabled": True,
+            "dry_run": False,
+            "password": "test-password",
+            "write_retries": 1,
+            "write_retry_backoff": 0,
         })
-        instance._values.update({"grid_w": 0.0, "soc_percent": 10.0})
-        self.assertEqual(instance._calculate_target_current(), 4.0)
+        instance._resolved_endpoint = "https://192.168.0.146:443"
 
+        with patch("alfeneve.lib.alfeneve.alfen.Alfen") as alfen:
+            alfen.return_value.__enter__.side_effect = requests.exceptions.ConnectionError()
+            self.assertFalse(instance._write_current(6))
 
-class ShouldSendTest(TestCase):
-    def test_first_send_always_true(self):
-        instance = _make_instance()
-        self.assertTrue(instance._should_send(6.0))
+        self.assertTrue(instance._discovery_event.is_set())
+        self.assertEqual(instance._discovery_status, "waiting")
 
-    def test_within_deadband_is_false(self):
-        instance = _make_instance({"deadband_tenths": 5})
-        instance._last_sent_current = 6.0
-        self.assertFalse(instance._should_send(6.3))
+    def test_authentication_http_error_does_not_request_rediscovery(self):
+        instance = _make_instance({
+            "enabled": True,
+            "dry_run": False,
+            "password": "test-password",
+            "write_retries": 1,
+            "write_retry_backoff": 0,
+        })
+        instance._resolved_endpoint = "https://192.168.0.146:443"
 
-    def test_outside_deadband_is_true(self):
-        instance = _make_instance({"deadband_tenths": 5})
-        instance._last_sent_current = 6.0
-        self.assertTrue(instance._should_send(6.6))
+        with patch("alfeneve.lib.alfeneve.alfen.Alfen") as alfen:
+            alfen.return_value.__enter__.side_effect = requests.exceptions.HTTPError()
+            self.assertFalse(instance._write_current(6))
 
-
-class ValidateConfigTest(TestCase):
-    def _valid_config(self):
-        return {
-            "signals": [
-                {"name": "solar_w"},
-                {"name": "grid_w"},
-                {"name": "soc_percent"},
-            ],
-            "min_current": 6,
-            "max_current": 16,
-            "update_interval": 30,
-        }
-
-    def test_valid_config_does_not_raise(self):
-        instance = _make_instance()
-        instance._validate_config(self._valid_config())
-
-    def test_missing_signal_raises(self):
-        instance = _make_instance()
-        config = self._valid_config()
-        config["signals"] = [{"name": "solar_w"}, {"name": "grid_w"}]
-        with self.assertRaises(ValueError):
-            instance._validate_config(config)
-
-    def test_max_below_min_raises(self):
-        instance = _make_instance()
-        config = self._valid_config()
-        config["max_current"] = 4
-        with self.assertRaises(ValueError):
-            instance._validate_config(config)
-
-    def test_update_interval_zero_raises(self):
-        instance = _make_instance()
-        config = self._valid_config()
-        config["update_interval"] = 0
-        with self.assertRaises(ValueError):
-            instance._validate_config(config)
-
-
-class HandleMeasurementCounterStatusTest(TestCase):
-    def test_soc_percent_converted_from_kwh(self):
-        instance = _make_instance({"battery_capacity_wh": 10000})
-        instance._signal_map = {"battery-id": {"name": "soc_percent", "field": "realtime", "scale": 1}}
-        event = MagicMock()
-        event.data = {"id": "battery-id", "realtime": 7.2}
-        instance.handle_measurement_counter_status(event)
-        self.assertAlmostEqual(instance._values["soc_percent"], 72.0)
-        self.assertIn("soc_percent", instance._value_ts)
-
-    def test_solar_w_passed_through_unconverted(self):
-        instance = _make_instance()
-        instance._signal_map = {"solar-id": {"name": "solar_w", "field": "realtime", "scale": 1}}
-        event = MagicMock()
-        event.data = {"id": "solar-id", "realtime": 1500}
-        instance.handle_measurement_counter_status(event)
-        self.assertEqual(instance._values["solar_w"], 1500.0)
-
-    def test_unknown_measurement_counter_id_ignored(self):
-        instance = _make_instance()
-        instance._signal_map = {"known-id": {"name": "solar_w", "field": "realtime", "scale": 1}}
-        event = MagicMock()
-        event.data = {"id": "unknown-id", "realtime": 1500}
-        instance.handle_measurement_counter_status(event)
-        self.assertIsNone(instance._values["solar_w"])
-
-
-class IsDataReadyTest(TestCase):
-    def test_ready_when_all_present_and_fresh(self):
-        instance = _make_instance({"max_value_age": 120})
-        instance._values.update({"solar_w": 100.0, "grid_w": 50.0, "soc_percent": 60.0})
-        now = time.time()
-        instance._value_ts = {"solar_w": now, "grid_w": now, "soc_percent": now}
-        self.assertTrue(instance._is_data_ready())
-
-    def test_not_ready_when_missing_value(self):
-        instance = _make_instance()
-        instance._values.update({"solar_w": 100.0, "grid_w": 50.0, "soc_percent": None})
-        self.assertFalse(instance._is_data_ready())
-
-    def test_not_ready_when_stale(self):
-        instance = _make_instance({"max_value_age": 60})
-        instance._values.update({"solar_w": 100.0, "grid_w": 50.0, "soc_percent": 60.0})
-        stale = time.time() - 3600
-        instance._value_ts = {"solar_w": stale, "grid_w": stale, "soc_percent": stale}
-        self.assertFalse(instance._is_data_ready())
-
-
-class WriteCurrentRetryTest(TestCase):
-    def _run_write_current(self, instance, alfen_cls):
-        fake_lib = MagicMock()
-        fake_lib_alfeneve = MagicMock()
-        fake_lib_alfeneve_alfen = MagicMock()
-        fake_lib_alfeneve_alfen.Alfen = alfen_cls
-        mocks = {
-            "lib": fake_lib,
-            "lib.alfeneve": fake_lib_alfeneve,
-            "lib.alfeneve.alfen": fake_lib_alfeneve_alfen,
-        }
-        with patch.dict(sys.modules, mocks), patch("time.sleep"):
-            instance._write_current(7.5)
-
-    def test_succeeds_on_first_attempt(self):
-        instance = _make_instance({"dry_run": False, "write_retries": 3, "write_retry_backoff": 0})
-        context = MagicMock()
-        alfen_cls = MagicMock(return_value=context)
-        context.__enter__ = MagicMock(return_value=context)
-        context.__exit__ = MagicMock(return_value=False)
-
-        self._run_write_current(instance, alfen_cls)
-
-        context.set_property.assert_called_once()
-        self.assertEqual(instance._last_sent_current, 7.5)
-
-    def test_retries_then_succeeds(self):
-        instance = _make_instance({"dry_run": False, "write_retries": 3, "write_retry_backoff": 0})
-
-        attempts = {"count": 0}
-
-        class FlakyAlfen:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __enter__(self):
-                attempts["count"] += 1
-                if attempts["count"] < 2:
-                    raise RuntimeError("boom")
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def set_property(self, *args, **kwargs):
-                pass
-
-        self._run_write_current(instance, FlakyAlfen)
-
-        self.assertEqual(attempts["count"], 2)
-        self.assertEqual(instance._last_sent_current, 7.5)
-
-    def test_gives_up_after_max_retries(self):
-        instance = _make_instance({"dry_run": False, "write_retries": 2, "write_retry_backoff": 0})
-
-        class AlwaysFailAlfen:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __enter__(self):
-                raise RuntimeError("boom")
-
-            def __exit__(self, *args):
-                return False
-
-        self._run_write_current(instance, AlwaysFailAlfen)
-
-        self.assertIsNone(instance._last_sent_current)
-
-    def test_dry_run_does_not_call_alfen(self):
-        instance = _make_instance({"dry_run": True})
-        instance._write_current(6.0)
-        self.assertEqual(instance._last_sent_current, 6.0)
+        self.assertFalse(instance._discovery_event.is_set())

@@ -6,6 +6,7 @@ A zero policy target writes 0 A to the current property to pause charging.
 import copy
 import json
 import logging
+import requests
 import threading
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ import pytz
 from plugins.base import OMPluginBase, PluginConfigChecker, background_task, om_expose
 
 from .lib.alfeneve.control import DEFAULTS, CurrentLimiter, decide, finite_number
+from .lib.alfeneve.discovery import discover_alfen
 from .lib.alfeneve.forecast import fetch_forecast
 
 
@@ -31,14 +33,15 @@ def as_bool(value):
 
 class AlfenEveControl(OMPluginBase):
     name = "AlfenEveControl"
-    version = "0.2.7"
+    version = "0.2.9"
     interfaces = [("config", "1.0")]
 
     default_config = dict(DEFAULTS, **{
-        "config_schema_version": 5,
+        "config_schema_version": 6,
         "enabled": False,
         "dry_run": True,
-        "endpoint": "https://192.168.1.100",
+        "endpoint": "",
+        "charger_identity": "",
         "username": "admin",
         "password": "",
         "verify_ssl": False,
@@ -77,12 +80,18 @@ class AlfenEveControl(OMPluginBase):
             {"name": "scale", "type": "int", "description": "Multiply input; SOC expects kWh after scaling"},
         ],
     }]
+    for field in config_description:
+        if field["name"] == "endpoint":
+            field["description"] = "Optional HTTPS IP override; blank resolves charger_identity over mDNS"
+        elif field["name"] == "charger_identity":
+            field["description"] = "Alfen mDNS TXT Identity; auto-learned only when exactly one charger is found"
 
     def __init__(self, webinterface, connector):
         super(AlfenEveControl, self).__init__(webinterface=webinterface, connector=connector)
         self._lock = threading.RLock()
         self._config_checker = PluginConfigChecker(self.config_description)
         self._config = self._normalize_config(self.read_config(copy.deepcopy(self.default_config)))
+        self._discovery_event = threading.Event()
         self._config_error = None
         try:
             self._validate_config(self._config)
@@ -125,7 +134,9 @@ class AlfenEveControl(OMPluginBase):
         config["signals"] = normalized_signals
         for key in ("pause_verified", "pause_property", "pause_value_json", "resume_value_json"):
             config.pop(key, None)
-        config["config_schema_version"] = 5
+        config["endpoint"] = str(config.get("endpoint") or "").strip()
+        config["charger_identity"] = str(config.get("charger_identity") or "").strip()
+        config["config_schema_version"] = 6
         return config
 
     def _reset_state(self):
@@ -149,6 +160,10 @@ class AlfenEveControl(OMPluginBase):
         self._measurement_event_count = 0
         self._matched_event_count = 0
         self._last_measurement_event = None
+        self._resolved_endpoint = self._config["endpoint"]
+        self._discovery_status = "manual_override" if self._resolved_endpoint else "waiting"
+        self._discovery_error = None
+        self._last_discovery_at = None
 
     def _rebuild_signal_map(self):
         self._signal_map = {}
@@ -173,6 +188,8 @@ class AlfenEveControl(OMPluginBase):
                 raise ValueError("status_event_id must be a nonnegative integer")
             if signal["name"] == "soc_percent" and signal["field"] == "realtime":
                 raise ValueError("SOC must use total stored energy, not realtime power")
+        if config["endpoint"] and not config["endpoint"].startswith("https://"):
+            raise ValueError("endpoint override must use HTTPS")
         positive = ("voltage", "battery_capacity_wh", "update_interval", "request_timeout", "max_value_age",
                 "auxiliary_max_value_age",
                     "write_retries", "command_refresh_seconds", "grid_import_limit_w", "increase_step_tenths", "forecast_max_age",
@@ -218,8 +235,8 @@ class AlfenEveControl(OMPluginBase):
             if finite_number(config["forecast_kwp"]) <= 0 or finite_number(config["forecast_inverter_kw"]) <= 0:
                 raise ValueError("panel and inverter capacity must be positive")
         if config["enabled"] and not config["dry_run"]:
-            if not config["endpoint"].startswith("https://") or not config["password"] or not config["current_property"].strip():
-                raise ValueError("live control requires HTTPS endpoint, password and current property")
+            if not config["password"] or not config["current_property"].strip():
+                raise ValueError("live control requires password and current property")
 
     def _is_data_ready(self, now=None):
         now = time.time() if now is None else now
@@ -249,13 +266,17 @@ class AlfenEveControl(OMPluginBase):
         if config["dry_run"]:
             logger.info("DRY-RUN %s %.1fA", "pause" if target == 0 else "charge", target)
         else:
+            endpoint = config["endpoint"] or self._resolved_endpoint
+            if not endpoint:
+                self._last_error = "discovery: " + (self._discovery_error or "waiting for matching Alfen charger")
+                return False
             # Validate at the write boundary too, not only via the UI.
             self._validate_config(dict(config, enabled=True))
             from .lib.alfeneve.alfen import Alfen
             for attempt in range(1, config["write_retries"] + 1):
                 phase = "connect/login"
                 try:
-                    with Alfen(config["endpoint"], (config["username"], config["password"]),
+                    with Alfen(endpoint, (config["username"], config["password"]),
                                verify=config["verify_ssl"], tls_legacy=config["tls_legacy"],
                                timeout=(3.05, config["request_timeout"])) as eve:
                         # The user verified that zero pauses and a positive current
@@ -266,6 +287,9 @@ class AlfenEveControl(OMPluginBase):
                     break
                 except Exception as exc:
                     self._last_error = phase + ": " + type(exc).__name__
+                    if not config["endpoint"] and isinstance(
+                            exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+                        self._discovery_event.set()
                     if attempt == config["write_retries"]:
                         self._writes_failed += 1
                         # Some commands may have reached the charger. Forget the
@@ -281,6 +305,66 @@ class AlfenEveControl(OMPluginBase):
         self._last_error = None
         self._writes_succeeded += 1
         return True
+
+    def _apply_discovery_result(self, config_snapshot, services):
+        with self._lock:
+            if config_snapshot != self._config:
+                return
+            if config_snapshot["endpoint"]:
+                self._resolved_endpoint = config_snapshot["endpoint"]
+                self._discovery_status = "manual_override"
+                self._discovery_error = None
+                return
+
+            identity = config_snapshot["charger_identity"].casefold()
+            candidates = ([service for service in services
+                           if service["identity"].casefold() == identity]
+                          if identity else list(services))
+            if not identity and len(candidates) == 1:
+                updated_config = copy.deepcopy(self._config)
+                updated_config["charger_identity"] = candidates[0]["identity"]
+                self.write_config(updated_config)
+                self._config = updated_config
+                identity = updated_config["charger_identity"].casefold()
+
+            if len(candidates) == 1:
+                self._resolved_endpoint = candidates[0]["endpoint"]
+                self._discovery_status = "resolved"
+                self._discovery_error = None
+            else:
+                self._resolved_endpoint = ""
+                if not candidates:
+                    self._discovery_status = "not_found"
+                    self._discovery_error = "no Alfen charger matched the configured identity"
+                else:
+                    self._discovery_status = "ambiguous"
+                    self._discovery_error = "multiple Alfen chargers found; configure charger_identity"
+            self._last_discovery_at = datetime.now(timezone.utc).isoformat()
+
+    def _discover_once(self):
+        with self._lock:
+            config_snapshot = copy.deepcopy(self._config)
+        if config_snapshot["endpoint"]:
+            self._apply_discovery_result(config_snapshot, [])
+            return
+        try:
+            services = discover_alfen(timeout=2.5)
+            self._apply_discovery_result(config_snapshot, services)
+        except Exception as exc:
+            with self._lock:
+                if config_snapshot == self._config:
+                    self._resolved_endpoint = ""
+                    self._discovery_status = "error"
+                    self._discovery_error = type(exc).__name__
+                    self._last_discovery_at = datetime.now(timezone.utc).isoformat()
+            logger.warning("Alfen mDNS discovery failed (%s)", type(exc).__name__)
+
+    @background_task
+    def discovery_loop(self):
+        while True:
+            self._discover_once()
+            self._discovery_event.wait(60)
+            self._discovery_event.clear()
 
     def _control_once(self, now=None):
         now = datetime.now(timezone.utc) if now is None else now
@@ -433,6 +517,7 @@ class AlfenEveControl(OMPluginBase):
             # change; never let a dry-run command suppress the first live write.
             self._reset_state()
             self._rebuild_signal_map()
+            self._discovery_event.set()
         return json.dumps({"success": True})
 
     @om_expose
@@ -454,4 +539,9 @@ class AlfenEveControl(OMPluginBase):
                 "measurement_event_count": self._measurement_event_count,
                 "matched_event_count": self._matched_event_count,
                 "last_measurement_event": self._last_measurement_event,
+                "charger_identity": self._config["charger_identity"],
+                "resolved_endpoint": self._resolved_endpoint,
+                "discovery_status": self._discovery_status,
+                "discovery_error": self._discovery_error,
+                "last_discovery_at": self._last_discovery_at,
             }, allow_nan=False)

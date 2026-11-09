@@ -1,5 +1,5 @@
 {
-    "version": "0.2.7",
+    "version": "0.2.9",
     "name": "AlfenEveControl",
     "description": "Control Alfen charger current from OpenMotics measurement counters",
     "metric_source": "alfenevecontrol",

@@ -1,12 +1,12 @@
 # AlfenEveControl Plugin
 
-Version 0.2.7 controls a single-phase Alfen Eve charger using measured solar,
+Version 0.2.9 controls a single-phase Alfen Eve charger using measured solar,
 grid, home-battery and EV power, with Forecast.Solar informing when to defer
 grid charging. See [PLAN.md](PLAN.md) for formulas, decisions and pending hardware checks.
 
 ## Status
 
-The runtime policy is implemented in release 0.2.7. The user verified that
+The runtime policy and mDNS endpoint discovery are implemented in release 0.2.9. The user verified that
 setting the current property to 0 pauses charging and restoring a positive value
 resumes it. Live API writes have succeeded; actual delivered current still needs
 to be confirmed from the vehicle or charger.
@@ -63,6 +63,23 @@ https://gitlab.com/LordGaav/alfen-eve
 See:
 - NOTICE.txt
 - LICENSE.txt
+
+## Charger Discovery
+
+`endpoint` is an optional HTTPS override. When set, it always wins and mDNS
+discovery does not replace it. To use discovery, clear `endpoint` and set
+`charger_identity` to the Alfen TXT `Identity` value. If both are blank, the
+plugin learns and saves the identity only when exactly one `_alfen._tcp.local`
+service is found. If more than one is present, it waits for an identity instead
+of choosing one.
+
+Discovery resolves the mDNS SRV port and A-record address, scans again every 60
+seconds, and retries immediately after network connection/timeouts. An HTTP
+authentication error does not cause the plugin to switch chargers. mDNS
+advertisements are unauthenticated; identity selects the candidate, while the
+normal HTTPS login remains required. The gateway must pass multicast DNS
+(UDP 5353); on Linux the plugin joins using the IPv4 address on the default
+route. This implementation adds no Python package dependency.
 
 ## Plugin Config Notes
 

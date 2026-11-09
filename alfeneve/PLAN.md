@@ -55,7 +55,13 @@ Deliverable: robust plugin ready for real gateway tests.
 
 ## Agreed Control Direction
 
-Implemented in plugin version 0.2.7. It uses the gateway's sensor-status forwarding path. The user verified that writing 0 A to the current property pauses an active session and restoring a positive limit resumes it. Live API writes have succeeded; actual delivered current still requires vehicle or charger readback. The UI config response omits internal `config_schema_version` and preserves the current migration version on save.
+Implemented in plugin version 0.2.9. It uses the gateway's sensor-status forwarding path and standard-library mDNS discovery for `_alfen._tcp.local`. On Linux, discovery joins mDNS using the IPv4 address of the default-route interface. The user verified that writing 0 A to the current property pauses an active session and restoring a positive limit resumes it. Live API writes have succeeded; actual delivered current still requires vehicle or charger readback. The UI config response omits internal `config_schema_version` and preserves the current migration version on save.
+
+Charger resolution uses the mDNS TXT `Identity`. A configured `endpoint` is a
+hard manual override. If both values are empty, exactly one service must be
+discovered before its identity is saved; multiple results are never guessed.
+Discovery retries every 60 seconds and immediately after network transport
+failures, but not after HTTP authentication rejection.
 
 ### Confirmed Measurements and Priorities
 
