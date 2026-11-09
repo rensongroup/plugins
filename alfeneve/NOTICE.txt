@@ -1,0 +1,15 @@
+This plugin vendors code from the alfen-eve project:
+- Project: https://gitlab.com/LordGaav/alfen-eve
+- Upstream file: alfeneve/alfen.py (develop branch)
+- Copyright: (c) 2019 Nick Douma
+- License: MIT (see LICENSE.txt in this folder)
+
+Modifications in this repository:
+- Added runtime fallbacks for optional dependencies.
+- Added a write helper (`set_property`) using the real `POST /api/prop`
+  request format confirmed via captured device traffic, used by the
+  OpenMotics plugin.
+- Added optional legacy TLS support (`tls_legacy`) and request timeouts for
+  chargers with older firmware that OpenSSL 3.x rejects by default.
+- Added relaxed JSON decoding to tolerate malformed responses (trailing
+  commas, misspelled NaN) observed from the charger firmware.
